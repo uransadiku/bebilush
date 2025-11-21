@@ -1,165 +1,364 @@
 'use client';
 
-import { useState } from 'react';
-import { Sparkles, Search, BookOpen, Heart } from 'lucide-react';
-import Button from '@/components/Button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { Sparkles, ArrowRight, X, Heart } from 'lucide-react';
+import { cn } from '@/lib/utils';
+
+// Simple motion components could be added here, but we'll stick to CSS transitions for reliability
+// This design focuses on Editorial Minimalism - "The UI is the text"
 
 export default function EmratPage() {
-    const [gender, setGender] = useState('both');
-    const [style, setStyle] = useState('modern');
+    // State
+    const router = useRouter();
+    const [gender, setGender] = useState<'boy' | 'girl' | 'both'>('both');
+    const [style, setStyle] = useState<string>('modern');
     const [startingLetter, setStartingLetter] = useState('');
     const [generatedNames, setGeneratedNames] = useState<any[]>([]);
+    const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
     const [isLoading, setIsLoading] = useState(false);
-    const [error, setError] = useState('');
+    const [showResults, setShowResults] = useState(false);
+    const [showAuthModal, setShowAuthModal] = useState(false);
+    const [hasDismissedAuth, setHasDismissedAuth] = useState(false);
+    const [showToast, setShowToast] = useState(false);
 
-    const generateNames = async (e: React.FormEvent) => {
-        e.preventDefault();
+    // Translation map
+    const origins: Record<string, string> = {
+        'Albanian': 'Shqiptare',
+        'Traditional Albanian': 'Tradicionale',
+        'Islamic': 'Islame',
+        'Christian': 'Kristiane',
+        'Catholic': 'Katolike',
+        'Nature-inspired': 'Natyra',
+        'Modern Albanian': 'Moderne',
+        'Arabic': 'Arabe',
+        'Greek': 'Greke',
+        'Latin': 'Latine',
+        'Turkish': 'Turke',
+        'Illyrian': 'Ilire'
+    };
+
+    const generateNames = async (e?: React.FormEvent) => {
+        if (e) e.preventDefault();
         setIsLoading(true);
-        setError('');
-        setGeneratedNames([]);
-
+        
+        if (!showResults) {
+            setGeneratedNames([]);
+        }
+        
+        // Simulate network delay for better UX feel if it's too fast
+        const minTime = new Promise(resolve => setTimeout(resolve, 800));
+        
         try {
-            const response = await fetch('/api/generate-names', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ gender, style, startingLetter }),
-            });
+            const [response] = await Promise.all([
+                fetch('/api/generate-names', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ gender, style, startingLetter }),
+                }),
+                minTime
+            ]);
 
             const data = await response.json();
 
-            if (!response.ok) {
-                throw new Error(data.error || 'Failed to generate names');
-            }
-
+            if (!response.ok) throw new Error(data.error);
+            
             if (data.names) {
-                setGeneratedNames(data.names);
+                if (showResults) {
+                    setGeneratedNames(prev => [...prev, ...data.names]);
+                } else {
+                    setGeneratedNames(data.names);
+                    setShowResults(true);
+                }
             }
-        } catch (error: any) {
-            console.error('Error generating names:', error);
-            setError(error.message || 'Ndodhi një gabim. Ju lutem provoni përsëri.');
+        } catch (error) {
+            console.error(error);
         } finally {
             setIsLoading(false);
         }
     };
 
+    const toggleSaveName = (name: string) => {
+        setSavedNames(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(name)) {
+                newSet.delete(name);
+            } else {
+                newSet.add(name);
+                // Smart Hook Logic
+                if (!hasDismissedAuth) {
+                    setShowAuthModal(true);
+                } else {
+                    // Show subtle toast for users who dismissed the modal
+                    setShowToast(true);
+                    setTimeout(() => setShowToast(false), 4000);
+                }
+            }
+            return newSet;
+        });
+    };
+
+    const handleDismissAuth = () => {
+        setShowAuthModal(false);
+        setHasDismissedAuth(true);
+    };
+
+    // Reset view to generate again
+    const resetView = () => {
+        setShowResults(false);
+        setGeneratedNames([]);
+    };
+
     return (
-        <div className="container py-12 max-w-4xl mx-auto">
-            <div className="text-center mb-12">
-                <h1 className="text-4xl font-heading font-bold mb-4 text-foreground">Gjeni Emrin e Përsosur</h1>
-                <p className="text-muted-foreground text-lg max-w-2xl mx-auto">
-                    Përdorni inteligjencën artificiale për të zbuluar emra shqiptarë unikë, modernë ose tradicionalë për fëmijën tuaj.
-                </p>
+        <div className="min-h-[calc(100vh-80px)] bg-[#F8F8F8] text-zinc-900 font-sans selection:bg-black selection:text-white pt-8">
+            
+            {/* SAVED INDICATOR - Moved down below header (header is h-20/80px) */}
+            <div className="fixed top-24 right-6 z-[40] mix-blend-difference text-white md:text-zinc-900 md:mix-blend-normal pointer-events-none">
+                {savedNames.size > 0 && (
+                    <div className="flex items-center gap-2 text-sm font-medium pointer-events-auto animate-in fade-in zoom-in duration-300">
+                        <span className="bg-black text-white h-10 px-4 flex items-center justify-center rounded-full text-sm shadow-xl">
+                            <Heart className="w-4 h-4 fill-white mr-2" />
+                            {savedNames.size}
+                        </span>
+                    </div>
+                )}
             </div>
 
-            <div className="grid md:grid-cols-3 gap-8">
-                <Card className="md:col-span-1 h-fit">
-                    <CardHeader>
-                        <CardTitle className="flex items-center gap-2 text-lg">
-                            <Search size={20} className="text-primary" />
-                            Preferencat
-                        </CardTitle>
-                        <CardDescription>Zgjidhni kriteret për emrin</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                        <form onSubmit={generateNames} className="space-y-4">
+            {/* AUTH HOOK MODAL */}
+            {showAuthModal && (
+                <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
+                    {/* Backdrop */}
+                    <div 
+                        className="absolute inset-0 bg-black/20 backdrop-blur-sm transition-opacity" 
+                        onClick={handleDismissAuth}
+                    />
+                    
+                    {/* Modal Content */}
+                    <div className="relative bg-white w-full max-w-md p-8 md:p-10 shadow-2xl animate-in zoom-in-95 duration-300">
+                        <button 
+                            onClick={handleDismissAuth}
+                            className="absolute top-4 right-4 text-zinc-400 hover:text-black transition-colors"
+                        >
+                            <X size={20} />
+                        </button>
+
+                        <div className="flex flex-col items-center text-center space-y-6">
+                            <div className="w-16 h-16 bg-zinc-50 rounded-full flex items-center justify-center mb-2">
+                                <Heart className="w-8 h-8 fill-black text-black" />
+                            </div>
+                            
                             <div className="space-y-2">
-                                <Label htmlFor="gender">Gjinia</Label>
-                                <Select value={gender} onValueChange={setGender}>
-                                    <SelectTrigger id="gender">
-                                        <SelectValue placeholder="Zgjidhni gjininë" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="boy">Djalë</SelectItem>
-                                        <SelectItem value="girl">Vajzë</SelectItem>
-                                        <SelectItem value="both">Surprizë (Të dyja)</SelectItem>
-                                    </SelectContent>
-                                </Select>
+                                <h3 className="text-2xl md:text-3xl font-heading font-bold text-zinc-900">
+                                    Mos i humbni emrat e preferuar
+                                </h3>
+                                <p className="text-zinc-500 leading-relaxed">
+                                    Krijoni një llogari falas për të ruajtur listën tuaj dhe për ta aksesuar atë nga çdo pajisje.
+                                </p>
                             </div>
 
-                            <div className="space-y-2">
-                                <Label htmlFor="style">Stili i Emrit</Label>
-                                <Select value={style} onValueChange={setStyle}>
-                                    <SelectTrigger id="style">
-                                        <SelectValue placeholder="Zgjidhni stilin" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="modern">Modern & Unik</SelectItem>
-                                        <SelectItem value="traditional">Tradicional Shqiptar</SelectItem>
-                                        <SelectItem value="religious">Fetar (Mysliman/Katolik)</SelectItem>
-                                        <SelectItem value="nature">Frymëzuar nga Natyra</SelectItem>
-                                    </SelectContent>
-                                </Select>
+                            <div className="w-full space-y-3 pt-2">
+                                <button 
+                                    onClick={() => router.push('/register')}
+                                    className="w-full py-4 bg-black text-white font-medium text-lg hover:scale-[1.02] transition-transform active:scale-95"
+                                >
+                                    Krijo Llogari Falas
+                                </button>
+                                <button 
+                                    onClick={handleDismissAuth}
+                                    className="w-full py-4 text-zinc-500 hover:text-zinc-900 font-medium transition-colors"
+                                >
+                                    Vazhdo si vizitor
+                                </button>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
-                            <div className="space-y-2">
-                                <Label htmlFor="letter">Shkronja e parë (Opsionale)</Label>
-                                <Input
-                                    id="letter"
-                                    placeholder="p.sh. A"
-                                    maxLength={1}
-                                    value={startingLetter}
-                                    onChange={(e) => setStartingLetter(e.target.value)}
-                                    suppressHydrationWarning
-                                />
-                            </div>
+            {/* MINIMAL TOAST NOTIFICATION */}
+            {showToast && (
+                <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[150] flex items-center gap-4 bg-zinc-900 text-white px-6 py-4 rounded-full shadow-2xl animate-in slide-in-from-bottom-5 duration-300">
+                    <span className="text-sm font-medium text-zinc-200">U ruajt në sesionin e tanishëm.</span>
+                    <button 
+                        onClick={() => router.push('/register')}
+                        className="text-sm font-bold text-white hover:underline underline-offset-2"
+                    >
+                        Ruaje përgjithmonë
+                    </button>
+                </div>
+            )}
 
-                            <Button type="submit" className="w-full mt-4" isLoading={isLoading} icon={<Sparkles size={16} />}>
-                                Gjenero Emra
-                            </Button>
-                            {error && (
-                                <div className="mt-4 p-3 bg-destructive/10 border border-destructive/20 rounded-md text-destructive text-sm">
-                                    {error}
+            {/* MAIN INTERFACE */}
+            <main className="relative flex flex-col items-center justify-center min-h-[70vh]">
+                
+                {/* INPUT SECTION */}
+                <div className={cn(
+                    "w-full flex flex-col items-center px-6 transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                    showResults ? "-translate-y-[20vh] opacity-0 pointer-events-none absolute inset-0" : "opacity-100"
+                )}>
+                    <div className="max-w-4xl w-full space-y-12 md:space-y-16">
+                        
+                        {/* The Narrative Form */}
+                        <div className="text-4xl md:text-6xl lg:text-7xl font-heading font-bold leading-[1.1] tracking-tight text-zinc-900">
+                            <span className="text-zinc-400 font-medium text-2xl md:text-3xl block mb-6">
+                                Dua të gjej një emër për...
+                            </span>
+                            
+                            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
+                                {/* Gender Selector */}
+                                <div className="relative inline-block group">
+                                    <span className="border-b-4 border-black cursor-pointer hover:opacity-70 transition-opacity">
+                                        {gender === 'boy' ? 'një Djalë' : gender === 'girl' ? 'një Vajzë' : 'këdo'}
+                                    </span>
+                                    <select 
+                                        className="absolute inset-0 opacity-0 cursor-pointer"
+                                        value={gender}
+                                        onChange={(e) => setGender(e.target.value as any)}
+                                    >
+                                        <option value="boy">një Djalë</option>
+                                        <option value="girl">një Vajzë</option>
+                                        <option value="both">këdo (Surprizë)</option>
+                                    </select>
                                 </div>
-                            )}
-                        </form>
-                    </CardContent>
-                </Card>
 
-                <div className="md:col-span-2">
-                    {generatedNames.length > 0 ? (
-                        <div className="grid gap-4">
-                            {generatedNames.map((name, index) => (
-                                <Card key={index} className="overflow-hidden hover:shadow-md transition-shadow border-primary/20">
-                                    <CardContent className="p-6 flex items-start justify-between">
-                                        <div>
-                                            <div className="flex items-center gap-2 mb-1">
-                                                <h3 className="text-2xl font-bold text-primary">{name.name}</h3>
-                                                <span className="text-xs px-2 py-0.5 bg-secondary rounded-full text-foreground/80 font-medium capitalize">
-                                                    {name.gender === 'boy' ? 'Djalë' : 'Vajzë'}
-                                                </span>
+                                <span className="text-zinc-400">që është</span>
+
+                                {/* Style Selector */}
+                                <div className="relative inline-block group">
+                                    <span className="border-b-4 border-black cursor-pointer hover:opacity-70 transition-opacity">
+                                        {style === 'modern' ? 'Modern' : 
+                                         style === 'traditional' ? 'Tradicional' : 
+                                         style === 'religious' ? 'Fetar' : 'Natyral'}
+                                    </span>
+                                    <select 
+                                        className="absolute inset-0 opacity-0 cursor-pointer"
+                                        value={style}
+                                        onChange={(e) => setStyle(e.target.value)}
+                                    >
+                                        <option value="modern">Modern</option>
+                                        <option value="traditional">Tradicional</option>
+                                        <option value="religious">Fetar</option>
+                                        <option value="nature">Natyral</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2 mt-4">
+                                <span className="text-zinc-400">dhe fillon me</span>
+                                
+                                {/* Letter Input */}
+                                <div className="relative inline-flex items-baseline">
+                                    <input 
+                                        type="text" 
+                                        maxLength={1}
+                                        placeholder="?"
+                                        value={startingLetter}
+                                        onChange={(e) => setStartingLetter(e.target.value.toUpperCase())}
+                                        className="bg-transparent border-b-4 border-zinc-200 focus:border-black text-center w-[1.5em] outline-none placeholder:text-zinc-300 uppercase"
+                                    />
+                                </div>
+                                <span className="text-zinc-300 text-2xl md:text-4xl font-normal self-center ml-2">(opsionale)</span>
+                            </div>
+                        </div>
+
+                        {/* Action Button */}
+                        <div className="pt-8">
+                            <button 
+                                onClick={() => generateNames()}
+                                disabled={isLoading}
+                                className="group flex items-center gap-4 text-xl md:text-2xl font-medium transition-all hover:gap-6 disabled:opacity-50"
+                            >
+                                {isLoading ? (
+                                    <span className="animate-pulse">Po kërkojmë...</span>
+                                ) : (
+                                    <>
+                                        <span className="border-b border-transparent group-hover:border-black transition-all">
+                                            Gjenero Emrat
+                                        </span>
+                                        <div className="bg-black text-white rounded-full p-3 transition-transform group-hover:scale-110 group-hover:rotate-[-10deg]">
+                                            <Sparkles size={20} />
+                                        </div>
+                                    </>
+                                )}
+                            </button>
+                        </div>
+
+                    </div>
+                </div>
+
+                {/* RESULTS SECTION - FULLSCREEN OVERLAY */}
+                <div className={cn(
+                    "fixed inset-0 z-[60] bg-white overflow-y-auto transition-transform duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                    showResults ? "translate-y-0" : "translate-y-[100vh]"
+                )}>
+                    <div className="min-h-screen">
+                        {/* Sticky Header */}
+                        <div className="sticky top-0 z-50 px-6 py-6 flex justify-between items-center bg-white/90 backdrop-blur-md supports-[backdrop-filter]:bg-white/60 border-b border-zinc-100">
+                            <button 
+                                onClick={resetView}
+                                className="group flex items-center gap-2 px-4 py-2 rounded-full bg-zinc-100 hover:bg-black hover:text-white transition-all duration-300"
+                            >
+                                <ArrowRight size={18} className="rotate-180 group-hover:-translate-x-1 transition-transform" />
+                                <span className="text-sm font-medium">Ndrysho Kërkimin</span>
+                            </button>
+                            
+                            <h2 className="text-sm font-medium tracking-widest uppercase text-zinc-400 hidden md:block absolute left-1/2 -translate-x-1/2">
+                                Rezultatet
+                            </h2>
+                        </div>
+
+                        {/* Gallery Grid */}
+                        <div className="container max-w-6xl mx-auto px-4 pb-20">
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-16 md:gap-y-24 mt-10">
+                                {generatedNames.map((name, index) => {
+                                    const isSaved = savedNames.has(name.name);
+                                    return (
+                                        <div key={index} className="group flex flex-col gap-4">
+                                            <div className="relative">
+                                                <h3 className="text-6xl md:text-7xl font-heading font-bold tracking-tighter text-zinc-900 group-hover:text-black transition-colors">
+                                                    {name.name}
+                                                </h3>
+                                                <button 
+                                                    onClick={() => toggleSaveName(name.name)}
+                                                    className={cn(
+                                                        "absolute -right-4 -top-4 p-3 rounded-full transition-all opacity-0 group-hover:opacity-100 focus:opacity-100",
+                                                        isSaved ? "opacity-100 text-red-500" : "text-zinc-300 hover:text-red-500"
+                                                    )}
+                                                >
+                                                    <Heart size={24} fill={isSaved ? "currentColor" : "none"} />
+                                                </button>
                                             </div>
-                                            <p className="text-foreground/80 mb-2 italic">{name.meaning}</p>
-                                            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                                                <BookOpen size={12} />
-                                                <span>Origjina: {name.origin}</span>
+                                            
+                                            <div className="space-y-2 border-l-2 border-zinc-100 pl-4 transition-colors group-hover:border-black">
+                                                <p className="text-lg text-zinc-600 italic leading-relaxed">
+                                                    "{name.meaning}"
+                                                </p>
+                                                <div className="flex items-center gap-3 text-sm font-medium tracking-wide uppercase text-zinc-400">
+                                                    <span>{name.gender === 'boy' ? 'Djalë' : 'Vajzë'}</span>
+                                                    <span>•</span>
+                                                    <span>{origins[name.origin] || name.origin}</span>
+                                                </div>
                                             </div>
                                         </div>
-                                        <button className="text-muted-foreground hover:text-red-500 transition-colors" aria-label="Ruaj emrin">
-                                            <Heart size={20} />
-                                        </button>
-                                    </CardContent>
-                                </Card>
-                            ))}
-                        </div>
-                    ) : (
-                        <div className="h-full min-h-[300px] flex flex-col items-center justify-center text-center p-8 border-2 border-dashed rounded-xl bg-muted/30">
-                            <div className="bg-background p-4 rounded-full mb-4 shadow-sm">
-                                <Sparkles size={32} className="text-primary/60" />
+                                    );
+                                })}
                             </div>
-                            <h3 className="text-xl font-semibold mb-2 text-foreground">Gati për të zbuluar?</h3>
-                            <p className="text-muted-foreground max-w-xs">
-                                Plotësoni preferencat në të majtë dhe klikoni "Gjenero Emra" për të parë sugjerimet tona të zgjedhura me kujdes.
-                            </p>
+                            
+                            {/* Footer Action */}
+                            <div className="mt-32 text-center pb-12">
+                                <button 
+                                    onClick={() => generateNames()}
+                                    disabled={isLoading}
+                                    className="inline-flex items-center justify-center px-8 py-4 text-lg font-medium text-white bg-black rounded-full hover:scale-105 transition-transform disabled:opacity-50"
+                                >
+                                    {isLoading ? 'Po kërkojmë...' : 'Gjenero të tjera'}
+                                </button>
+                            </div>
                         </div>
-                    )}
+                    </div>
                 </div>
-            </div>
+
+            </main>
         </div>
     );
 }
