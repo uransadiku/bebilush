@@ -4,6 +4,10 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Sparkles, ArrowRight, X, Heart } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useAuth } from '@/context/AuthContext';
+import { useSavedNames } from '@/hooks/useSavedNames';
+
+import { pollService } from '@/services/pollService';
 
 // Simple motion components could be added here, but we'll stick to CSS transitions for reliability
 // This design focuses on Editorial Minimalism - "The UI is the text"
@@ -11,11 +15,13 @@ import { cn } from '@/lib/utils';
 export default function EmratPage() {
     // State
     const router = useRouter();
+    const { user } = useAuth();
+    const { savedNames, saveName, removeName, isLoadingNames } = useSavedNames();
+
     const [gender, setGender] = useState<'boy' | 'girl' | 'both'>('both');
     const [style, setStyle] = useState<string>('modern');
     const [startingLetter, setStartingLetter] = useState('');
     const [generatedNames, setGeneratedNames] = useState<any[]>([]);
-    const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
     const [isLoading, setIsLoading] = useState(false);
     const [showResults, setShowResults] = useState(false);
     const [showAuthModal, setShowAuthModal] = useState(false);
@@ -23,26 +29,30 @@ export default function EmratPage() {
     const [showToast, setShowToast] = useState(false);
     const [showSavedView, setShowSavedView] = useState(false);
     const [generationCount, setGenerationCount] = useState(0);
-    const [modalType, setModalType] = useState<'save' | 'limit' | 'likes_limit'>('save');
+    const [modalType, setModalType] = useState<'save' | 'limit' | 'likes_limit' | 'share_poll' | 'enter_name' | 'register_share' | 'confirm_poll'>('save');
     const [isClient, setIsClient] = useState(false);
+    const [pollLink, setPollLink] = useState('');
+    const [creatorName, setCreatorName] = useState(''); // State for creator name
+    const [isCreatingPoll, setIsCreatingPoll] = useState(false);
     const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-    const FREE_LIMIT = 3;
-    const MAX_LIKES = 5;
+    const GUEST_LIMIT = 10;
+    const USER_LIMIT = 25;
+    const FREE_LIMIT = 3; // Generation limit for guests
 
-    useEffect(() => {
-        return () => {
-            if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-        };
-    }, []);
-
+    // Restore generation count from local storage
     useEffect(() => {
         setIsClient(true);
         const storedCount = localStorage.getItem('guest_gen_count');
         if (storedCount) {
             setGenerationCount(parseInt(storedCount));
         }
-    }, []);
+
+        // Try to get name from auth if available (optional enhancement later)
+        if (user?.displayName) {
+            setCreatorName(user.displayName);
+        }
+    }, [user]);
 
     const incrementGeneration = () => {
         const newCount = generationCount + 1;
@@ -66,22 +76,43 @@ export default function EmratPage() {
         'Illyrian': 'Ilire'
     };
 
+    const abortControllerRef = useRef<AbortController | null>(null);
+
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
+            if (abortControllerRef.current) {
+                abortControllerRef.current.abort();
+            }
+        };
+    }, []);
+
     const generateNames = async (e?: React.FormEvent) => {
         if (e) e.preventDefault();
 
         // Check limit
-        if (generationCount >= FREE_LIMIT) {
+        if (!user && generationCount >= FREE_LIMIT) {
             setModalType('limit');
             setShowAuthModal(true);
             return;
         }
 
+        // Cancel previous request if exists
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+        }
+
+        // Create new controller
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        const signal = controller.signal;
+
         setIsLoading(true);
-        
+
         if (!showResults) {
             setGeneratedNames([]);
         }
-        
+
         // Simulate network delay for better UX feel if it's too fast
         // Only apply delay on the first search (when results aren't shown yet)
         const minTime = new Promise(resolve => setTimeout(resolve, showResults ? 0 : 800));
@@ -100,6 +131,7 @@ export default function EmratPage() {
                         startingLetter,
                         excludeNames: existingNames
                     }),
+                    signal
                 }),
                 minTime
             ]);
@@ -109,7 +141,9 @@ export default function EmratPage() {
             if (!response.ok) throw new Error(data.error);
 
             if (data.names) {
-                incrementGeneration();
+                if (!user) {
+                    incrementGeneration();
+                }
                 if (showResults) {
                     setGeneratedNames(prev => [...prev, ...data.names]);
                 } else {
@@ -117,38 +151,127 @@ export default function EmratPage() {
                     setShowResults(true);
                 }
             }
-        } catch (error) {
+        } catch (error: any) {
+            if (error.name === 'AbortError' || error.message === 'The user aborted a request.') {
+                console.log('Request aborted');
+                return;
+            }
             console.error(error);
         } finally {
-            setIsLoading(false);
+            // Only turn off loading if this is the current request
+            if (abortControllerRef.current === controller) {
+                setIsLoading(false);
+                abortControllerRef.current = null;
+            }
         }
     };
 
-    const toggleSaveName = (name: string) => {
-        setSavedNames(prev => {
-            const newSet = new Set(prev);
-            if (newSet.has(name)) {
-                newSet.delete(name);
-            } else {
-                // Check Like Limit
-                if (newSet.size >= MAX_LIKES) {
-                    setModalType('likes_limit');
-                    setShowAuthModal(true);
-                    return prev;
-                }
-                newSet.add(name);
-                // Toast with action - Reset timer if active
-                if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-                setShowToast(true);
-                toastTimerRef.current = setTimeout(() => setShowToast(false), 4000);
+    const toggleSaveName = async (name: string) => {
+        if (savedNames.has(name)) {
+            await removeName(name);
+        } else {
+            const currentLimit = user ? USER_LIMIT : GUEST_LIMIT;
+
+            if (savedNames.size >= currentLimit) {
+                setModalType('likes_limit');
+                setShowAuthModal(true);
+                return;
             }
-            return newSet;
-        });
+
+            await saveName(name);
+
+            // Smart Hook Logic - Only show if user is NOT logged in
+            if (!user) {
+                if (!hasDismissedAuth) {
+                    setModalType('save'); // Set modal type for saving
+                    setShowAuthModal(true);
+                } else {
+                    // Show subtle toast for users who dismissed the modal
+                    setShowToast(true);
+                    setTimeout(() => setShowToast(false), 4000);
+                }
+            }
+        }
     };
 
     const handleDismissAuth = () => {
         setShowAuthModal(false);
         setHasDismissedAuth(true);
+    };
+
+    const handleCreatePollClick = async () => {
+        if (savedNames.size === 0) return;
+
+        // 1. Guest Check
+        if (!user) {
+            setModalType('register_share');
+            setShowAuthModal(true);
+            setShowSavedView(false);
+            return;
+        }
+
+        setIsCreatingPoll(true);
+        try {
+            // 2. Check existing polls
+            const polls = await pollService.getUserPolls(user.uid);
+
+            // Check for duplicate list (exact match of names)
+            const currentNames = Array.from(savedNames).sort().join(',');
+            const existingPoll = polls.find(p => p.names.slice().sort().join(',') === currentNames);
+
+            if (existingPoll) {
+                const origin = window.location.origin;
+                setPollLink(`${origin}/vote/${existingPoll.id}`);
+                setModalType('share_poll');
+                setShowAuthModal(true);
+                setShowSavedView(false);
+                setIsCreatingPoll(false);
+                return;
+            }
+
+            // 3. Check poll limit (Max 3)
+            if (polls.length >= 3) {
+                alert("Keni arritur limitin e 3 sondazheve aktive. Fshini një ekzistues për të krijuar të ri.");
+                setIsCreatingPoll(false);
+                return;
+            }
+
+            // 4. Ask for name if missing
+            if (!creatorName.trim()) {
+                setModalType('enter_name');
+                setShowAuthModal(true);
+                setShowSavedView(false);
+                setIsCreatingPoll(false);
+                return;
+            }
+
+            // 5. Confirm Final List
+            setModalType('confirm_poll');
+            setShowAuthModal(true);
+            setShowSavedView(false);
+
+        } catch (error) {
+            console.error("Error checking polls", error);
+            setIsCreatingPoll(false);
+        }
+    };
+
+    const confirmAndCreatePoll = async () => {
+        if (!user) return;
+        setIsCreatingPoll(true);
+        try {
+            const namesArray = Array.from(savedNames);
+            const pollId = await pollService.createPoll(user.uid, namesArray, creatorName);
+
+            const origin = window.location.origin;
+            setPollLink(`${origin}/vote/${pollId}`);
+            setModalType('share_poll');
+        } catch (error) {
+            console.error("Failed to create poll", error);
+            alert("Ndodhi një gabim. Ju lutem provoni përsëri.");
+        } finally {
+            setIsCreatingPoll(false);
+        }
     };
 
     // Reset view to generate again
@@ -163,7 +286,7 @@ export default function EmratPage() {
             {/* SAVED INDICATOR - CLICK TO VIEW SAVED NAMES DRAWER */}
             <div className="fixed top-24 right-6 z-[40] mix-blend-difference text-white md:text-zinc-900 md:mix-blend-normal pointer-events-none">
                 {savedNames.size > 0 && (
-                    <button 
+                    <button
                         onClick={() => setShowSavedView(true)}
                         className="group flex items-center gap-2 text-sm font-medium pointer-events-auto animate-in fade-in zoom-in duration-300 hover:scale-105 transition-transform"
                     >
@@ -180,20 +303,23 @@ export default function EmratPage() {
                 "fixed inset-0 z-[200] bg-black/20 backdrop-blur-sm transition-opacity duration-500",
                 showSavedView ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
             )} onClick={() => setShowSavedView(false)}>
-                <div 
+                <div
                     className={cn(
-                        "absolute right-0 top-0 h-full w-full max-w-md bg-white shadow-2xl transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] flex flex-col",
+                        "absolute right-0 top-0 h-full w-full max-w-md bg-white shadow-2xl transition-transform duration-500 flex flex-col",
                         showSavedView ? "translate-x-0" : "translate-x-full"
                     )}
+                    style={{ transitionTimingFunction: 'cubic-bezier(0.32, 0.72, 0, 1)' }}
                     onClick={e => e.stopPropagation()}
                 >
                     {/* Drawer Header */}
                     <div className="p-6 md:p-8 border-b border-zinc-100 flex items-center justify-between bg-white/80 backdrop-blur-md sticky top-0 z-10">
                         <div>
                             <h3 className="text-2xl font-heading font-bold text-zinc-900">Të preferuarit</h3>
-                            <p className="text-zinc-500 text-sm mt-1">Keni ruajtur {savedNames.size} nga {MAX_LIKES} emra</p>
+                            <p className="text-zinc-500 text-sm mt-1">
+                                Keni ruajtur {savedNames.size} nga {user ? USER_LIMIT : GUEST_LIMIT} emra
+                            </p>
                         </div>
-                        <button 
+                        <button
                             onClick={() => setShowSavedView(false)}
                             className="p-2 hover:bg-zinc-100 rounded-full transition-colors"
                         >
@@ -212,7 +338,7 @@ export default function EmratPage() {
                             Array.from(savedNames).map((name) => (
                                 <div key={name} className="flex items-center justify-between p-4 rounded-2xl bg-zinc-50 border border-zinc-100 group hover:border-zinc-200 transition-colors">
                                     <span className="text-xl font-heading font-bold text-zinc-900">{name}</span>
-                                    <button 
+                                    <button
                                         onClick={(e) => {
                                             e.stopPropagation();
                                             toggleSaveName(name);
@@ -227,24 +353,52 @@ export default function EmratPage() {
                     </div>
 
                     {/* Drawer Footer - Conversion Hook */}
+                    {/* Drawer Footer - Gamified & Viral */}
                     <div className="p-6 md:p-8 border-t border-zinc-100 bg-zinc-50/50">
-                        <div className="space-y-4">
-                            <div className="flex items-start gap-3 p-4 bg-orange-50/50 rounded-xl border border-orange-100/50">
-                                <div className="p-1.5 bg-orange-100 rounded-full text-orange-600 mt-0.5">
-                                    <Sparkles size={14} />
+                        {!user ? (
+                            <div className="space-y-4">
+                                <div className="flex items-start gap-3 p-4 bg-orange-50/50 rounded-xl border border-orange-100/50">
+                                    <div className="p-1.5 bg-orange-100 rounded-full text-orange-600 mt-0.5">
+                                        <Sparkles size={14} />
+                                    </div>
+                                    <p className="text-sm text-orange-800/80 leading-relaxed">
+                                        Kujdes: Këta emra do të fshihen. Regjistrohuni për t'i ruajtur dhe për të kërkuar mendimin e miqve!
+                                    </p>
                                 </div>
-                                <p className="text-sm text-orange-800/80 leading-relaxed">
-                                    Kujdes: Këta emra do të fshihen nëse mbyllni browserin. Regjistrohuni për t'i ruajtur përgjithmonë.
-                                </p>
+                                <button
+                                    onClick={() => router.push('/register?redirect=/emrat')}
+                                    className="w-full py-4 bg-black text-white font-medium text-lg rounded-xl hover:scale-[1.02] transition-transform shadow-xl shadow-black/5 active:scale-95 flex items-center justify-center gap-2"
+                                >
+                                    <span>Ruaji & Ndaji me Miqtë</span>
+                                    <ArrowRight size={18} />
+                                </button>
                             </div>
-                            <button 
-                                onClick={() => router.push('/register')}
-                                className="w-full py-4 bg-black text-white font-medium text-lg rounded-xl hover:scale-[1.02] transition-transform shadow-xl shadow-black/5 active:scale-95 flex items-center justify-center gap-2"
-                            >
-                                <span>Ruaji Përgjithmonë</span>
-                                <ArrowRight size={18} />
-                            </button>
-                        </div>
+                        ) : (
+                            <div className="space-y-4">
+                                <div className="flex items-start gap-3 p-4 bg-blue-50/50 rounded-xl border border-blue-100/50">
+                                    <div className="p-1.5 bg-blue-100 rounded-full text-blue-600 mt-0.5">
+                                        <Sparkles size={14} />
+                                    </div>
+                                    <p className="text-sm text-blue-800/80 leading-relaxed">
+                                        Jeni në dilemë? Ndani listën me partnerin ose miqtë dhe lërini ata të votojnë për emrin e preferuar!
+                                    </p>
+                                </div>
+                                <button
+                                    onClick={handleCreatePollClick}
+                                    disabled={isCreatingPoll}
+                                    className="w-full py-4 bg-black text-white font-medium text-lg rounded-xl hover:scale-[1.02] transition-transform shadow-xl shadow-black/5 active:scale-95 flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
+                                >
+                                    {isCreatingPoll ? (
+                                        <span className="animate-pulse">Po krijojmë linkun...</span>
+                                    ) : (
+                                        <>
+                                            <span>Krijo Link Votimi</span>
+                                            <ArrowRight size={18} />
+                                        </>
+                                    )}
+                                </button>
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>
@@ -271,41 +425,118 @@ export default function EmratPage() {
                             <div className="w-16 h-16 bg-zinc-50 rounded-full flex items-center justify-center mb-2">
                                 {modalType === 'save' || modalType === 'likes_limit' ? (
                                     <Heart className="w-8 h-8 fill-black text-black" />
+                                ) : modalType === 'share_poll' ? (
+                                    <Sparkles className="w-8 h-8 text-black fill-black" />
                                 ) : (
                                     <Sparkles className="w-8 h-8 text-black" />
                                 )}
                             </div>
-                            
+
                             <div className="space-y-2">
                                 <h3 className="text-2xl md:text-3xl font-heading font-bold text-zinc-900">
                                     {modalType === 'save' ? 'Mos i humbni emrat e preferuar' :
-                                     modalType === 'likes_limit' ? 'Lista është mbushur plot' :
-                                     'Keni arritur limitin ditor'}
+                                        modalType === 'likes_limit' ? 'Lista është mbushur plot' :
+                                            modalType === 'share_poll' ? 'Linku u krijua!' :
+                                                modalType === 'enter_name' ? 'Si quheni?' :
+                                                    modalType === 'register_share' ? 'Krijoni llogari për të shpërndarë' :
+                                                        modalType === 'confirm_poll' ? 'Konfirmoni listën' :
+                                                            'Keni arritur limitin ditor'}
                                 </h3>
                                 <p className="text-zinc-500 leading-relaxed">
                                     {modalType === 'save'
                                         ? `Keni ruajtur ${savedNames.size} emra. Krijoni një llogari falas për t'i ruajtur ata përgjithmonë.`
                                         : modalType === 'likes_limit'
-                                        ? `Keni arritur limitin e ${MAX_LIKES} emrave të preferuar si vizitor. Regjistrohuni për të ruajtur pafund.`
-                                        : 'Keni arritur limitin e kërkimeve si vizitor. Krijoni një llogari falas për të vazhduar kërkimin pa limit.'
+                                            ? `Keni arritur limitin e ${user ? USER_LIMIT : GUEST_LIMIT} emrave të preferuar. ${!user ? 'Regjistrohuni për më shumë.' : ''}`
+                                            : modalType === 'share_poll'
+                                                ? 'Dërgojani këtë link miqve dhe familjarëve që të votojnë për emrin e tyre të preferuar.'
+                                                : modalType === 'enter_name'
+                                                    ? 'Shkruani emrin tuaj që miqtë të dinë se kë po ndihmojnë.'
+                                                    : modalType === 'register_share'
+                                                        ? 'Vetëm përdoruesit e regjistruar mund të krijojnë sondazhe dhe të shpërndajnë listën.'
+                                                        : modalType === 'confirm_poll'
+                                                            ? 'Lista do të finalizohet për votim. Nuk do të mund të shtoni emra të tjerë në këtë sondazh pasi të krijohet.'
+                                                            : 'Keni arritur limitin e kërkimeve si vizitor. Krijoni një llogari falas për të vazhduar kërkimin pa limit.'
                                     }
                                 </p>
                             </div>
 
-                            <div className="w-full space-y-3 pt-2">
-                                <button 
-                                    onClick={() => router.push('/register')}
-                                    className="w-full py-4 bg-black text-white font-medium text-lg hover:scale-[1.02] transition-transform active:scale-95"
-                                >
-                                    Krijo Llogari Falas
-                                </button>
-                                <button 
-                                    onClick={() => setShowAuthModal(false)}
-                                    className="w-full py-4 text-zinc-500 hover:text-zinc-900 font-medium transition-colors"
-                                >
-                                    {modalType === 'save' ? 'Vazhdo si vizitor' : 'Mbyll'}
-                                </button>
-                            </div>
+                            {modalType === 'share_poll' ? (
+                                <div className="w-full space-y-4 pt-2">
+                                    <div className="flex items-center gap-2 p-3 bg-zinc-50 rounded-xl border border-zinc-100">
+                                        <code className="flex-1 text-sm text-zinc-600 truncate text-left">
+                                            {pollLink}
+                                        </code>
+                                        <button
+                                            onClick={() => {
+                                                navigator.clipboard.writeText(pollLink);
+                                                alert("Linku u kopjua!");
+                                            }}
+                                            className="text-xs font-bold bg-black text-white px-3 py-1.5 rounded-lg hover:bg-zinc-800"
+                                        >
+                                            Kopjo
+                                        </button>
+                                    </div>
+                                    <button
+                                        onClick={() => {
+                                            const text = `Më ndihmoni të zgjedh emrin e bebit! Votoni këtu: ${pollLink}`;
+                                            window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+                                        }}
+                                        className="w-full py-4 bg-[#25D366] text-white font-medium text-lg rounded-xl hover:scale-[1.02] transition-transform shadow-xl shadow-[#25D366]/20 active:scale-95 flex items-center justify-center gap-2"
+                                    >
+                                        <span>Dërgo në WhatsApp</span>
+                                    </button>
+                                </div>
+                            ) : modalType === 'enter_name' ? (
+                                <div className="w-full space-y-4 pt-2">
+                                    <input
+                                        type="text"
+                                        value={creatorName}
+                                        onChange={(e) => setCreatorName(e.target.value)}
+                                        placeholder="Emri juaj (psh. Era)"
+                                        className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-xl focus:border-black focus:outline-none transition-colors font-medium text-center"
+                                        autoFocus
+                                        onKeyDown={(e) => e.key === 'Enter' && handleCreatePollClick()}
+                                    />
+                                    <button
+                                        onClick={handleCreatePollClick}
+                                        disabled={!creatorName.trim()}
+                                        className="w-full py-4 bg-black text-white font-medium text-lg rounded-xl hover:scale-[1.02] transition-transform active:scale-95 disabled:opacity-50"
+                                    >
+                                        Vazhdo
+                                    </button>
+                                </div>
+                            ) : modalType === 'confirm_poll' ? (
+                                <div className="w-full space-y-3 pt-2">
+                                    <button
+                                        onClick={confirmAndCreatePoll}
+                                        disabled={isCreatingPoll}
+                                        className="w-full py-4 bg-black text-white font-medium text-lg rounded-xl hover:scale-[1.02] transition-transform active:scale-95 disabled:opacity-50"
+                                    >
+                                        {isCreatingPoll ? 'Po krijohet...' : 'Konfirmo dhe Krijo Linkun'}
+                                    </button>
+                                    <button
+                                        onClick={() => setShowAuthModal(false)}
+                                        className="w-full py-4 text-zinc-500 hover:text-zinc-900 font-medium transition-colors"
+                                    >
+                                        Anulo
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="w-full space-y-3 pt-2">
+                                    <button
+                                        onClick={() => router.push('/register?redirect=/emrat')}
+                                        className="w-full py-4 bg-black text-white font-medium text-lg hover:scale-[1.02] transition-transform active:scale-95"
+                                    >
+                                        {modalType === 'register_share' ? 'Regjistrohu Tani' : 'Krijo Llogari Falas'}
+                                    </button>
+                                    <button
+                                        onClick={() => setShowAuthModal(false)}
+                                        className="w-full py-4 text-zinc-500 hover:text-zinc-900 font-medium transition-colors"
+                                    >
+                                        {modalType === 'save' ? 'Vazhdo si vizitor' : 'Mbyll'}
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -315,13 +546,13 @@ export default function EmratPage() {
             {showToast && (
                 <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[150] flex items-center gap-4 bg-zinc-900/95 backdrop-blur-md text-white pl-6 pr-2 py-2 rounded-full shadow-2xl animate-in slide-in-from-bottom-5 duration-300 border border-zinc-800/50">
                     <span className="text-sm font-medium text-zinc-200 whitespace-nowrap">U ruajt në listë.</span>
-                    <button 
-                        onClick={() => router.push('/register')}
+                    <button
+                        onClick={() => router.push('/register?redirect=/emrat')}
                         className="bg-white text-black px-4 py-2 rounded-full text-xs font-bold hover:scale-105 transition-transform active:scale-95 whitespace-nowrap"
                     >
                         Ruaje përgjithmonë
                     </button>
-                    <button 
+                    <button
                         onClick={() => setShowToast(false)}
                         className="p-2 hover:bg-white/10 rounded-full transition-colors ml-1"
                     >
@@ -335,9 +566,9 @@ export default function EmratPage() {
 
                 {/* INPUT SECTION */}
                 <div className={cn(
-                    "w-full flex flex-col items-center px-6 transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                    "w-full flex flex-col items-center px-6 transition-all duration-700",
                     showResults ? "-translate-y-[20vh] opacity-0 pointer-events-none absolute inset-0" : "opacity-100"
-                )}>
+                )} style={{ transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)' }}>
                     <div className="max-w-4xl w-full space-y-12 md:space-y-16">
 
                         {/* The Narrative Form */}
@@ -409,10 +640,10 @@ export default function EmratPage() {
 
                         {/* Action Button */}
                         <div className="pt-8 space-y-4">
-                            {generationCount >= FREE_LIMIT ? (
+                            {!user && generationCount >= FREE_LIMIT ? (
                                 <div className="space-y-4 w-full">
-                                    <button 
-                                        onClick={() => router.push('/register')}
+                                    <button
+                                        onClick={() => router.push('/register?redirect=/emrat')}
                                         className="w-full group flex items-center justify-center gap-4 py-5 bg-black text-white text-xl md:text-2xl font-medium rounded-full transition-all hover:scale-[1.02] shadow-xl shadow-black/10 hover:shadow-black/20 relative overflow-hidden"
                                     >
                                         <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:animate-shimmer" />
@@ -425,7 +656,7 @@ export default function EmratPage() {
                                 </div>
                             ) : (
                                 <div className="space-y-4">
-                                    <button 
+                                    <button
                                         onClick={() => generateNames()}
                                         disabled={isLoading}
                                         className="group flex items-center gap-4 text-xl md:text-2xl font-medium transition-all hover:gap-6 disabled:opacity-50"
@@ -443,24 +674,26 @@ export default function EmratPage() {
                                             </>
                                         )}
                                     </button>
-                                    
+
                                     {/* Free Usage Indicator - Progress Style */}
-                                    <div className="flex items-center gap-2 text-zinc-400 text-sm font-medium group/indicator cursor-help">
-                                        <div className="flex gap-1">
-                                            {[...Array(FREE_LIMIT)].map((_, i) => (
-                                                <div 
-                                                    key={i}
-                                                    className={cn(
-                                                        "w-2 h-2 rounded-full transition-colors",
-                                                        i < generationCount ? "bg-zinc-300" : "bg-black"
-                                                    )}
-                                                />
-                                            ))}
+                                    {!user && (
+                                        <div className="flex items-center gap-2 text-zinc-400 text-sm font-medium group/indicator cursor-help">
+                                            <div className="flex gap-1">
+                                                {[...Array(FREE_LIMIT)].map((_, i) => (
+                                                    <div
+                                                        key={i}
+                                                        className={cn(
+                                                            "w-2 h-2 rounded-full transition-colors",
+                                                            i < generationCount ? "bg-zinc-300" : "bg-black"
+                                                        )}
+                                                    />
+                                                ))}
+                                            </div>
+                                            <span>
+                                                {Math.max(0, FREE_LIMIT - generationCount)} kërkime falas
+                                            </span>
                                         </div>
-                                        <span>
-                                            {Math.max(0, FREE_LIMIT - generationCount)} kërkime falas
-                                        </span>
-                                    </div>
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -470,9 +703,9 @@ export default function EmratPage() {
 
                 {/* RESULTS SECTION - FULLSCREEN OVERLAY */}
                 <div className={cn(
-                    "fixed inset-0 z-[60] bg-white overflow-y-auto transition-transform duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                    "fixed inset-0 z-[60] bg-white overflow-y-auto transition-transform duration-700",
                     showResults ? "translate-y-0" : "translate-y-[100vh]"
-                )}>
+                )} style={{ transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)' }}>
                     <div className="min-h-screen">
                         {/* Sticky Header */}
                         <div className="sticky top-0 z-50 px-6 py-6 flex justify-between items-center bg-white/90 backdrop-blur-md supports-[backdrop-filter]:bg-white/60 border-b border-zinc-100">
@@ -528,10 +761,10 @@ export default function EmratPage() {
 
                             {/* Footer Action */}
                             <div className="mt-32 text-center pb-12 flex flex-col items-center">
-                                {generationCount >= FREE_LIMIT ? (
+                                {!user && generationCount >= FREE_LIMIT ? (
                                     <div className="space-y-6 max-w-md w-full">
-                                        <button 
-                                            onClick={() => router.push('/register')}
+                                        <button
+                                            onClick={() => router.push('/register?redirect=/emrat')}
                                             className="w-full inline-flex items-center justify-center px-8 py-5 text-lg font-medium text-white bg-black rounded-full hover:scale-105 transition-transform shadow-2xl shadow-black/20"
                                         >
                                             <span>Krijo Llogari Falas</span>
@@ -543,29 +776,31 @@ export default function EmratPage() {
                                     </div>
                                 ) : (
                                     <div className="space-y-4">
-                                        <button 
+                                        <button
                                             onClick={() => generateNames()}
                                             disabled={isLoading}
                                             className="inline-flex items-center justify-center px-8 py-4 text-lg font-medium text-white bg-black rounded-full hover:scale-105 transition-transform disabled:opacity-50"
                                         >
                                             {isLoading ? 'Po kërkojmë...' : 'Gjenero të tjera'}
                                         </button>
-                                        <div className="flex items-center justify-center gap-2 text-zinc-400 text-sm font-medium">
-                                            <div className="flex gap-1">
-                                                {[...Array(FREE_LIMIT)].map((_, i) => (
-                                                    <div 
-                                                        key={i}
-                                                        className={cn(
-                                                            "w-1.5 h-1.5 rounded-full transition-colors",
-                                                            i < generationCount ? "bg-zinc-200" : "bg-zinc-400"
-                                                        )}
-                                                    />
-                                                ))}
+                                        {!user && (
+                                            <div className="flex items-center justify-center gap-2 text-zinc-400 text-sm font-medium">
+                                                <div className="flex gap-1">
+                                                    {[...Array(FREE_LIMIT)].map((_, i) => (
+                                                        <div
+                                                            key={i}
+                                                            className={cn(
+                                                                "w-1.5 h-1.5 rounded-full transition-colors",
+                                                                i < generationCount ? "bg-zinc-200" : "bg-zinc-400"
+                                                            )}
+                                                        />
+                                                    ))}
+                                                </div>
+                                                <span>
+                                                    {Math.max(0, FREE_LIMIT - generationCount)} falas
+                                                </span>
                                             </div>
-                                            <span>
-                                                {Math.max(0, FREE_LIMIT - generationCount)} falas
-                                            </span>
-                                        </div>
+                                        )}
                                     </div>
                                 )}
                             </div>
