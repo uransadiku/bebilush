@@ -4,6 +4,7 @@ import "./globals.css";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import { AuthProvider } from "@/context/AuthContext";
+import { GoogleOneTap } from "@/components/auth/GoogleOneTap";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 const outfit = Outfit({ subsets: ["latin"], variable: "--font-outfit" });
@@ -22,6 +23,7 @@ export default function RootLayout({
         <html lang="sq" suppressHydrationWarning>
             <body className={`${inter.variable} ${outfit.variable} min-h-screen flex flex-col`}>
                 <AuthProvider>
+                    <GoogleOneTap />
                     <Header />
                     <main className="flex-1">
                         {children}

@@ -153,10 +153,11 @@ export default function EmratPage() {
             }
         } catch (error: any) {
             if (error.name === 'AbortError' || error.message === 'The user aborted a request.') {
-                console.log('Request aborted');
+                // Ignore abort errors completely
                 return;
             }
-            console.error(error);
+            console.error("Generation error:", error);
+            // Optionally show a user-friendly error toast here if needed
         } finally {
             // Only turn off loading if this is the current request
             if (abortControllerRef.current === controller) {
@@ -284,18 +285,16 @@ export default function EmratPage() {
         <div className="min-h-[calc(100vh-80px)] bg-[#F8F8F8] text-zinc-900 font-sans selection:bg-black selection:text-white pt-8">
 
             {/* SAVED INDICATOR - CLICK TO VIEW SAVED NAMES DRAWER */}
-            <div className="fixed top-24 right-6 z-[40] mix-blend-difference text-white md:text-zinc-900 md:mix-blend-normal pointer-events-none">
-                {savedNames.size > 0 && (
-                    <button
-                        onClick={() => setShowSavedView(true)}
-                        className="group flex items-center gap-2 text-sm font-medium pointer-events-auto animate-in fade-in zoom-in duration-300 hover:scale-105 transition-transform"
-                    >
-                        <span className="bg-black text-white h-10 px-4 flex items-center justify-center rounded-full text-sm shadow-xl">
-                            <Heart className="w-4 h-4 fill-white mr-2 group-hover:scale-110 transition-transform" />
-                            {savedNames.size}
-                        </span>
-                    </button>
-                )}
+            <div className="fixed top-24 right-6 z-[40] pointer-events-none">
+                <button
+                    onClick={() => setShowSavedView(true)}
+                    className="group flex items-center gap-2 text-sm font-medium pointer-events-auto animate-in fade-in zoom-in duration-300 hover:scale-105 transition-transform"
+                >
+                    <span className="bg-black text-white h-10 px-4 flex items-center justify-center rounded-full text-sm shadow-xl border border-white/10">
+                        <Heart className="w-4 h-4 fill-white mr-2 group-hover:scale-110 transition-transform" />
+                        {savedNames.size}
+                    </span>
+                </button>
             </div>
 
             {/* SAVED NAMES DRAWER (SIDE OVERLAY) */}
@@ -530,7 +529,7 @@ export default function EmratPage() {
                                         {modalType === 'register_share' ? 'Regjistrohu Tani' : 'Krijo Llogari Falas'}
                                     </button>
                                     <button
-                                        onClick={() => setShowAuthModal(false)}
+                                        onClick={handleDismissAuth}
                                         className="w-full py-4 text-zinc-500 hover:text-zinc-900 font-medium transition-colors"
                                     >
                                         {modalType === 'save' ? 'Vazhdo si vizitor' : 'Mbyll'}

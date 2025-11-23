@@ -13,7 +13,8 @@ import { auth } from "@/lib/firebase";
 interface AuthContextType {
     user: User | null;
     loading: boolean;
-    signInWithGoogle: () => Promise<void>;
+    // Returns the signed-in user on success, or null if the user cancelled the popup.
+    signInWithGoogle: () => Promise<User | null>;
     signOut: () => Promise<void>;
 }
 
@@ -37,11 +38,19 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         return () => unsubscribe();
     }, []);
 
-    const signInWithGoogle = async () => {
+    const signInWithGoogle = async (): Promise<User | null> => {
         const provider = new GoogleAuthProvider();
         try {
-            await signInWithPopup(auth, provider);
-        } catch (error) {
+            const result = await signInWithPopup(auth, provider);
+            return result.user;
+        } catch (error: any) {
+            const code = error?.code as string | undefined;
+
+            // These are expected when the user closes the popup or another popup is already in progress.
+            if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+                return null;
+            }
+
             console.error("Error signing in with Google", error);
             throw error;
         }
