@@ -48,8 +48,15 @@ export function SignUpForm() {
     };
 
     const handleGoogleSignIn = async () => {
+        setError("");
         try {
-            await signInWithGoogle();
+            const googleUser = await signInWithGoogle();
+
+            // User closed or cancelled the Google popup; this is not an error.
+            if (!googleUser) {
+                return;
+            }
+
             router.push(redirectUrl);
         } catch (error) {
             setError("Gabim gjatë kyçjes me Google.");
