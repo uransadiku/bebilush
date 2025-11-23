@@ -3,6 +3,7 @@ import { Inter, Outfit } from "next/font/google";
 import "./globals.css";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
+import { AuthProvider } from "@/context/AuthContext";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 const outfit = Outfit({ subsets: ["latin"], variable: "--font-outfit" });
@@ -20,11 +21,13 @@ export default function RootLayout({
     return (
         <html lang="sq" suppressHydrationWarning>
             <body className={`${inter.variable} ${outfit.variable} min-h-screen flex flex-col`}>
-                <Header />
-                <main className="flex-1">
-                    {children}
-                </main>
-                <Footer />
+                <AuthProvider>
+                    <Header />
+                    <main className="flex-1">
+                        {children}
+                    </main>
+                    <Footer />
+                </AuthProvider>
             </body>
         </html>
     );
