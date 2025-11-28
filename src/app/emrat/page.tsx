@@ -2,12 +2,12 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { Sparkles, ArrowRight, X, Heart, Share2, Trash2, Link2, Users, ChevronRight, Copy, Check } from 'lucide-react';
+import { Sparkles, ArrowRight, X, Heart, Share2, Trash2, Link2, Users, ChevronRight, Copy, Check, Crown, ChevronDown, Clock, Eye, TrendingUp, MessageCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/context/AuthContext';
 import { useSavedNames } from '@/hooks/useSavedNames';
 
-import { pollService, Poll } from '@/services/pollService';
+import { pollService, Poll, PollResults } from '@/services/pollService';
 
 // Simple motion components could be added here, but we'll stick to CSS transitions for reliability
 // This design focuses on Editorial Minimalism - "The UI is the text"
@@ -16,7 +16,7 @@ export default function EmratPage() {
     // State
     const router = useRouter();
     const { user } = useAuth();
-    const { savedNames, saveName, removeName, isLoadingNames } = useSavedNames();
+    const { savedNames, saveName, removeName, clearAllNames, isLoadingNames } = useSavedNames();
 
     const [gender, setGender] = useState<'boy' | 'girl' | 'both'>('both');
     const [style, setStyle] = useState<string>('modern');
@@ -43,6 +43,11 @@ export default function EmratPage() {
     const [isDeletingPoll, setIsDeletingPoll] = useState(false);
     const [drawerTab, setDrawerTab] = useState<'names' | 'polls'>('names');
     const [copiedPollId, setCopiedPollId] = useState<string | null>(null);
+    
+    // Enhanced poll card state
+    const [expandedPollId, setExpandedPollId] = useState<string | null>(null);
+    const [pollResults, setPollResults] = useState<Record<string, PollResults>>({});
+    const [loadingResults, setLoadingResults] = useState<string | null>(null);
 
     const GUEST_LIMIT = 10;
     const USER_LIMIT = 25;
@@ -87,6 +92,31 @@ export default function EmratPage() {
             loadUserPolls();
         }
     }, [showSavedView, user, loadUserPolls]);
+
+    // Load poll results when expanded
+    const loadPollResults = useCallback(async (pollId: string) => {
+        if (pollResults[pollId]) return; // Already loaded
+        
+        setLoadingResults(pollId);
+        try {
+            const results = await pollService.getPollResults(pollId);
+            setPollResults(prev => ({ ...prev, [pollId]: results }));
+        } catch (error) {
+            console.error("Error loading poll results:", error);
+        } finally {
+            setLoadingResults(null);
+        }
+    }, [pollResults]);
+
+    // Handle poll card expansion
+    const togglePollExpanded = (pollId: string) => {
+        if (expandedPollId === pollId) {
+            setExpandedPollId(null);
+        } else {
+            setExpandedPollId(pollId);
+            loadPollResults(pollId);
+        }
+    };
 
     // Delete poll handler
     const handleDeletePoll = async () => {
@@ -278,53 +308,42 @@ export default function EmratPage() {
             return;
         }
 
-        setIsCreatingPoll(true);
-        try {
-            // Refresh polls list
-            const polls = await pollService.getUserPollsWithVotes(user.uid);
-            setUserPolls(polls);
+        // Use cached polls data for instant validation (already loaded when drawer opened)
+        const polls = userPolls;
 
-            // Check for duplicate list (exact match of names)
-            const currentNames = Array.from(savedNames).sort().join(',');
-            const existingPoll = polls.find(p => p.names.slice().sort().join(',') === currentNames);
+        // Check for duplicate list (exact match of names)
+        const currentNames = Array.from(savedNames).sort().join(',');
+        const existingPoll = polls.find(p => p.names.slice().sort().join(',') === currentNames);
 
-            if (existingPoll) {
-                const origin = window.location.origin;
-                setPollLink(`${origin}/vote/${existingPoll.id}`);
-                setModalType('share_poll');
-                setShowAuthModal(true);
-                setShowSavedView(false);
-                setIsCreatingPoll(false);
-                return;
-            }
-
-            // Check poll limit (Max 3) - show management modal instead of alert
-            if (polls.length >= MAX_POLLS) {
-                setModalType('poll_limit');
-                setShowAuthModal(true);
-                setShowSavedView(false);
-                setIsCreatingPoll(false);
-                return;
-            }
-
-            // Ask for name if missing
-            if (!creatorName.trim()) {
-                setModalType('enter_name');
-                setShowAuthModal(true);
-                setShowSavedView(false);
-                setIsCreatingPoll(false);
-                return;
-            }
-
-            // Confirm Final List
-            setModalType('confirm_poll');
+        if (existingPoll) {
+            const origin = window.location.origin;
+            setPollLink(`${origin}/vote/${existingPoll.id}`);
+            setModalType('share_poll');
             setShowAuthModal(true);
             setShowSavedView(false);
-
-        } catch (error) {
-            console.error("Error checking polls", error);
-            setIsCreatingPoll(false);
+            return;
         }
+
+        // Check poll limit (Max 3) - show management modal instead of alert
+        if (polls.length >= MAX_POLLS) {
+            setModalType('poll_limit');
+            setShowAuthModal(true);
+            setShowSavedView(false);
+            return;
+        }
+
+        // Ask for name if missing
+        if (!creatorName.trim()) {
+            setModalType('enter_name');
+            setShowAuthModal(true);
+            setShowSavedView(false);
+            return;
+        }
+
+        // Confirm Final List
+        setModalType('confirm_poll');
+        setShowAuthModal(true);
+        setShowSavedView(false);
     };
 
     const confirmAndCreatePoll = async () => {
@@ -336,14 +355,18 @@ export default function EmratPage() {
 
             const origin = window.location.origin;
             setPollLink(`${origin}/vote/${pollId}`);
-            setModalType('share_poll');
             
-            // Refresh polls list
+            // Switch to success modal immediately - don't block on cleanup
+            setIsCreatingPoll(false);
+            setModalType('share_poll');
+            setDrawerTab('polls');
+            
+            // Do cleanup in background (non-blocking)
+            clearAllNames().catch(err => console.error("Error clearing names:", err));
             loadUserPolls();
         } catch (error) {
             console.error("Failed to create poll", error);
             alert("Ndodhi një gabim. Ju lutem provoni përsëri.");
-        } finally {
             setIsCreatingPoll(false);
         }
     };
@@ -491,12 +514,29 @@ export default function EmratPage() {
                                         <p className="text-center">Nuk keni krijuar ende asnjë sondazh.<br/>Krijoni një nga lista e emrave!</p>
                                     </div>
                                 ) : (
-                                    userPolls.map((poll) => (
-                                        <div key={poll.id} className="p-4 rounded-2xl bg-zinc-50 border border-zinc-100 space-y-4">
-                                            {/* Poll Header */}
+                                    userPolls.map((poll) => {
+                                        const isExpanded = expandedPollId === poll.id;
+                                        const results = pollResults[poll.id!];
+                                        const isLoadingThisPoll = loadingResults === poll.id;
+                                        
+                                        return (
+                                            <div 
+                                                key={poll.id} 
+                                                className={cn(
+                                                    "rounded-2xl border transition-all duration-300 overflow-hidden",
+                                                    isExpanded 
+                                                        ? "bg-gradient-to-b from-amber-50/50 to-white border-amber-200/60 shadow-lg shadow-amber-100/50" 
+                                                        : "bg-zinc-50 border-zinc-100 hover:border-zinc-200"
+                                                )}
+                                            >
+                                                {/* Poll Header - Always Visible & Clickable */}
+                                                <button 
+                                                    onClick={() => togglePollExpanded(poll.id!)}
+                                                    className="w-full p-4 text-left"
+                                                >
                                             <div className="flex items-start justify-between">
-                                                <div className="space-y-1">
-                                                    <div className="flex items-center gap-2">
+                                                        <div className="space-y-2 flex-1">
+                                                            <div className="flex items-center gap-2 flex-wrap">
                                                         <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 text-xs font-medium rounded-full">
                                                             <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
                                                             Aktiv
@@ -505,39 +545,241 @@ export default function EmratPage() {
                                                             {poll.createdAt?.toDate?.().toLocaleDateString('sq-AL') || ''}
                                                         </span>
                                                     </div>
-                                                    <p className="text-lg font-heading font-bold text-zinc-900">
+                                                            
+                                                            {/* Quick Stats Row */}
+                                                            <div className="flex items-center gap-3">
+                                                                <span className="text-lg font-heading font-bold text-zinc-900">
                                                         {poll.names.length} emra
-                                                    </p>
+                                                                </span>
+                                                                <span className="text-zinc-300">•</span>
+                                                                <div className="flex items-center gap-1.5 text-sm text-zinc-600">
+                                                                    <Users size={14} className="text-zinc-400" />
+                                                                    <span className="font-medium">{poll.voteCount || 0} vota</span>
                                                 </div>
-                                                <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-full border border-zinc-200">
-                                                    <Users size={14} className="text-zinc-500" />
-                                                    <span className="text-sm font-medium">{poll.voteCount || 0} vota</span>
                                                 </div>
+
                                             </div>
 
-                                            {/* Names Preview */}
-                                            <div className="flex flex-wrap gap-2">
-                                                {poll.names.slice(0, 5).map((name, i) => (
-                                                    <span key={i} className="px-3 py-1 bg-white rounded-full text-sm font-medium text-zinc-700 border border-zinc-100">
+                                                        {/* Expand/Collapse Indicator */}
+                                                        <div className={cn(
+                                                            "p-2 rounded-full transition-all duration-300",
+                                                            isExpanded ? "bg-amber-100 rotate-180" : "bg-zinc-100"
+                                                        )}>
+                                                            <ChevronDown size={18} className={isExpanded ? "text-amber-600" : "text-zinc-400"} />
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Collapsed Names Preview */}
+                                                    {!isExpanded && (
+                                                        <div className="flex flex-wrap gap-1.5 mt-3">
+                                                            {poll.names.slice(0, 4).map((name, i) => (
+                                                                <span key={i} className="px-2.5 py-0.5 bg-white rounded-full text-xs font-medium text-zinc-600 border border-zinc-100">
                                                         {name}
                                                     </span>
                                                 ))}
-                                                {poll.names.length > 5 && (
-                                                    <span className="px-3 py-1 bg-zinc-100 rounded-full text-sm text-zinc-500">
-                                                        +{poll.names.length - 5} të tjerë
+                                                            {poll.names.length > 4 && (
+                                                                <span className="px-2.5 py-0.5 bg-zinc-100 rounded-full text-xs text-zinc-400">
+                                                                    +{poll.names.length - 4}
                                                     </span>
                                                 )}
                                             </div>
+                                                    )}
+                                                </button>
 
-                                            {/* Actions */}
-                                            <div className="flex gap-2 pt-2">
+                                                {/* Expanded Content */}
+                                                {isExpanded && (
+                                                    <div className="px-4 pb-4 space-y-4 animate-in slide-in-from-top-2 duration-200">
+                                                        
+                                                        {/* RESULTS SECTION */}
+                                                        {isLoadingThisPoll ? (
+                                                            <div className="py-8 flex items-center justify-center">
+                                                                <div className="flex items-center gap-2 text-zinc-400">
+                                                                    <div className="w-4 h-4 border-2 border-zinc-200 border-t-zinc-500 rounded-full animate-spin" />
+                                                                    <span className="text-sm">Po ngarkojmë rezultatet...</span>
+                                                                </div>
+                                                            </div>
+                                                        ) : results ? (
+                                                            <>
+                                                                {/* Rankings Section */}
+                                                                <div className="bg-white rounded-xl p-4 border border-zinc-100 space-y-3">
+                                                                    <h4 className="text-sm font-semibold text-zinc-700 flex items-center gap-2">
+                                                                        <TrendingUp size={14} />
+                                                                        Renditja e Emrave
+                                                                    </h4>
+                                                                    
+                                                                    {results.totalPoints === 0 ? (
+                                                                        <div className="py-6 text-center text-zinc-400 text-sm">
+                                                                            <Eye size={24} className="mx-auto mb-2 opacity-40" />
+                                                                            <p>Ende asnjë votë.</p>
+                                                                            <p className="text-xs mt-1">Ndani linkun për të marrë vota!</p>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <div className="space-y-2">
+                                                                            {results.rankings.map((item, idx) => (
+                                                                                <div key={item.name} className="relative">
+                                                                                    <div className="flex items-center gap-3">
+                                                                                        {/* Rank Badge */}
+                                                                                        <div className={cn(
+                                                                                            "w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0",
+                                                                                            idx === 0 && item.points > 0
+                                                                                                ? "bg-gradient-to-br from-amber-400 to-yellow-500 text-white shadow-md shadow-amber-200"
+                                                                                                : idx === 1 && item.points > 0
+                                                                                                    ? "bg-gradient-to-br from-zinc-300 to-zinc-400 text-white"
+                                                                                                    : idx === 2 && item.points > 0
+                                                                                                        ? "bg-gradient-to-br from-amber-600 to-amber-700 text-white"
+                                                                                                        : "bg-zinc-100 text-zinc-400"
+                                                                                        )}>
+                                                                                            {idx === 0 && item.points > 0 ? (
+                                                                                                <Crown size={14} />
+                                                                                            ) : (
+                                                                                                idx + 1
+                                                                                            )}
+                                                                                        </div>
+                                                                                        
+                                                                                        {/* Name & Progress */}
+                                                                                        <div className="flex-1 min-w-0">
+                                                                                            <div className="flex items-center justify-between mb-1">
+                                                                                                <span className={cn(
+                                                                                                    "font-heading font-bold truncate",
+                                                                                                    idx === 0 && item.points > 0 ? "text-amber-700" : "text-zinc-700"
+                                                                                                )}>
+                                                                                                    {item.name}
+                                                                                                </span>
+                                                                                                <div className="flex items-center gap-2 ml-2 flex-shrink-0">
+                                                                                                    <span className={cn(
+                                                                                                        "text-xs font-bold",
+                                                                                                        idx === 0 && item.points > 0 ? "text-amber-600" : "text-zinc-500"
+                                                                                                    )}>
+                                                                                                        {item.points} pikë
+                                                                                                    </span>
+                                                                                                    {item.voteCount > 0 && (
+                                                                                                        <span className="text-[10px] text-zinc-300">
+                                                                                                            ({item.voteCount} {item.voteCount === 1 ? 'votë' : 'vota'})
+                                                                                                        </span>
+                                                                                                    )}
+                                                                                                </div>
+                                                                                            </div>
+                                                                                            
+                                                                                            {/* Progress Bar */}
+                                                                                            <div className="h-2 bg-zinc-100 rounded-full overflow-hidden">
+                                                                                                <div 
+                                                                                                    className={cn(
+                                                                                                        "h-full rounded-full transition-all duration-500",
+                                                                                                        idx === 0 && item.points > 0
+                                                                                                            ? "bg-gradient-to-r from-amber-400 to-yellow-400"
+                                                                                                            : idx === 1 && item.points > 0
+                                                                                                                ? "bg-gradient-to-r from-zinc-300 to-zinc-400"
+                                                                                                                : "bg-zinc-200"
+                                                                                                    )}
+                                                                                                    style={{ width: `${item.percentage}%` }}
+                                                                                                />
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                </div>
+                                                                            ))}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+
+                                                                {/* Voters Section */}
+                                                                {results.voters.length > 0 && (
+                                                                    <div className="bg-white rounded-xl p-4 border border-zinc-100 space-y-3">
+                                                                        <h4 className="text-sm font-semibold text-zinc-700 flex items-center gap-2">
+                                                                            <Users size={14} />
+                                                                            Kush votoi ({results.voters.length})
+                                                                        </h4>
+                                                                        
+                                                                        <div className="space-y-3">
+                                                                            {results.voters.slice(0, 5).map((voter, idx) => (
+                                                                                <div key={idx} className="p-3 bg-zinc-50/50 rounded-xl space-y-2">
+                                                                                    <div className="flex items-center gap-3">
+                                                                                        {/* Avatar */}
+                                                                                        <div className="w-9 h-9 rounded-full bg-gradient-to-br from-rose-100 to-orange-100 flex items-center justify-center text-sm font-bold text-rose-600 flex-shrink-0">
+                                                                                            {voter.name.charAt(0).toUpperCase()}
+                                                                                        </div>
+                                                                                        
+                                                                                        {/* Voter Info */}
+                                                                                        <div className="flex-1 min-w-0">
+                                                                                            <p className="text-sm font-semibold text-zinc-800 truncate">
+                                                                                                {voter.name}
+                                                                                            </p>
+                                                                                            <div className="flex items-center gap-1 text-xs text-zinc-400">
+                                                                                                <Clock size={10} />
+                                                                                                <span>
+                                                                                                    {voter.votedAt.toLocaleDateString('sq-AL', { 
+                                                                                                        day: 'numeric', 
+                                                                                                        month: 'short',
+                                                                                                        hour: '2-digit',
+                                                                                                        minute: '2-digit'
+                                                                                                    })}
+                                                                                                </span>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    
+                                                                                    {/* Their rankings */}
+                                                                                    <div className="flex items-center gap-2 flex-wrap pl-12">
+                                                                                        {voter.rankedNames.map((item, i) => (
+                                                                                            <div key={i} className="flex items-center gap-1">
+                                                                                                <span className={cn(
+                                                                                                    "w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white",
+                                                                                                    item.rank === 1 ? "bg-gradient-to-br from-amber-400 to-yellow-500" :
+                                                                                                    item.rank === 2 ? "bg-gradient-to-br from-zinc-300 to-zinc-400" :
+                                                                                                    "bg-gradient-to-br from-amber-600 to-amber-700"
+                                                                                                )}>
+                                                                                                    {item.rank === 1 ? <Crown size={10} /> : item.rank}
+                                                                                                </span>
+                                                                                                <span className="text-xs font-medium text-zinc-600">
+                                                                                                    {item.name}
+                                                                                                </span>
+                                                                                            </div>
+                                                                                        ))}
+                                                                                    </div>
+                                                                                </div>
+                                                                            ))}
+                                                                            
+                                                                            {results.voters.length > 5 && (
+                                                                                <p className="text-xs text-zinc-400 text-center pt-1">
+                                                                                    +{results.voters.length - 5} votues të tjerë
+                                                                                </p>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                            </>
+                                                        ) : null}
+
+                                                        {/* Share Section - Enhanced */}
+                                                        <div className="bg-gradient-to-r from-indigo-50 to-blue-50 rounded-xl p-4 border border-indigo-100/50 space-y-3">
+                                                            <div className="flex items-center gap-2">
+                                                                <MessageCircle size={16} className="text-indigo-500" />
+                                                                <span className="text-sm font-semibold text-indigo-700">
+                                                                    Ftoni më shumë njerëz të votojnë
+                                                                </span>
+                                                            </div>
+                                                            
+                                                            <div className="flex gap-2">
                                                 <button
-                                                    onClick={() => copyPollLink(poll.id!)}
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        shareToWhatsApp(poll.id!, poll.creatorName);
+                                                                    }}
+                                                                    className="flex-1 py-3 bg-[#25D366] text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 hover:opacity-90 transition-opacity shadow-md shadow-green-200"
+                                                                >
+                                                                    <Share2 size={16} />
+                                                                    <span>WhatsApp</span>
+                                                                </button>
+                                                                <button
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        copyPollLink(poll.id!);
+                                                                    }}
                                                     className={cn(
-                                                        "flex-1 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-all",
+                                                                        "flex-1 py-3 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-all",
                                                         copiedPollId === poll.id
-                                                            ? "bg-green-100 text-green-700"
-                                                            : "bg-white border border-zinc-200 text-zinc-700 hover:border-zinc-300"
+                                                                            ? "bg-green-500 text-white"
+                                                                            : "bg-white border border-indigo-200 text-indigo-700 hover:border-indigo-300"
                                                     )}
                                                 >
                                                     {copiedPollId === poll.id ? (
@@ -548,30 +790,33 @@ export default function EmratPage() {
                                                     ) : (
                                                         <>
                                                             <Copy size={16} />
-                                                            <span>Kopjo linkun</span>
+                                                                            <span>Kopjo Linkun</span>
                                                         </>
                                                     )}
                                                 </button>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Delete Action - Less prominent */}
+                                                        <div className="flex justify-center pt-2">
                                                 <button
-                                                    onClick={() => shareToWhatsApp(poll.id!, poll.creatorName)}
-                                                    className="flex-1 py-2.5 bg-[#25D366] text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 hover:opacity-90 transition-opacity"
-                                                >
-                                                    <Share2 size={16} />
-                                                    <span>WhatsApp</span>
-                                                </button>
-                                                <button
-                                                    onClick={() => {
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
                                                         setPollToDelete(poll);
                                                         setModalType('delete_poll');
                                                         setShowAuthModal(true);
                                                     }}
-                                                    className="p-2.5 rounded-xl border border-zinc-200 text-zinc-400 hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition-colors"
+                                                                className="text-xs text-zinc-400 hover:text-red-500 flex items-center gap-1.5 py-2 px-3 rounded-lg hover:bg-red-50 transition-colors"
                                                 >
-                                                    <Trash2 size={16} />
+                                                                <Trash2 size={14} />
+                                                                <span>Fshi sondazhin</span>
                                                 </button>
                                             </div>
                                         </div>
-                                    ))
+                                                )}
+                                            </div>
+                                        );
+                                    })
                                 )}
                             </div>
                         )}
@@ -665,7 +910,7 @@ export default function EmratPage() {
 
             {/* AUTH HOOK MODAL */}
             {showAuthModal && (
-                <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
+                <div className="fixed inset-0 z-[250] flex items-center justify-center p-4">
                     {/* Backdrop */}
                     <div
                         className="absolute inset-0 bg-black/20 backdrop-blur-sm transition-opacity"
@@ -723,7 +968,7 @@ export default function EmratPage() {
                                                     : modalType === 'register_share'
                                                         ? 'Vetëm përdoruesit e regjistruar mund të krijojnë sondazhe dhe të shpërndajnë listën.'
                                                         : modalType === 'confirm_poll'
-                                                            ? 'Lista do të finalizohet për votim. Nuk do të mund të shtoni emra të tjerë në këtë sondazh pasi të krijohet.'
+                                                            ? 'Emrat do të kalojnë nga lista në sondazh. Lista juaj do të zbrazet dhe mund të filloni të kërkoni emra të rinj.'
                                                             : modalType === 'delete_poll'
                                                                 ? `Kjo do të fshijë sondazhin me ${pollToDelete?.names.length || 0} emra dhe ${pollToDelete?.voteCount || 0} vota. Ky veprim nuk mund të kthehet.`
                                                                 : modalType === 'poll_limit'
