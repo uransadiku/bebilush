@@ -1,14 +1,15 @@
 import { db } from '@/lib/firebase';
-import { collection, addDoc, doc, getDoc, serverTimestamp, query, where, getDocs, orderBy } from 'firebase/firestore';
+import { collection, addDoc, doc, getDoc, deleteDoc, serverTimestamp, query, where, getDocs, orderBy } from 'firebase/firestore';
 
 export interface Poll {
     id?: string;
     userId: string;
-    creatorName: string; // Added creatorName
+    creatorName: string;
     names: string[];
     createdAt: any;
     status: 'active' | 'closed';
     title?: string;
+    voteCount?: number; // Computed field for UI
 }
 
 export interface Vote {
@@ -108,6 +109,71 @@ export const pollService = {
             })) as Poll[];
         } catch (error) {
             console.error("Error fetching user polls:", error);
+            throw error;
+        }
+    },
+
+    /**
+     * Get all polls for a user with vote counts
+     */
+    getUserPollsWithVotes: async (userId: string) => {
+        try {
+            const q = query(
+                collection(db, 'polls'),
+                where('userId', '==', userId),
+                orderBy('createdAt', 'desc')
+            );
+            const snapshot = await getDocs(q);
+            
+            // Fetch vote counts for each poll
+            const pollsWithVotes = await Promise.all(
+                snapshot.docs.map(async (docSnap) => {
+                    const pollData = { id: docSnap.id, ...docSnap.data() } as Poll;
+                    
+                    // Get vote count
+                    const votesSnapshot = await getDocs(collection(db, `polls/${docSnap.id}/votes`));
+                    pollData.voteCount = votesSnapshot.size;
+                    
+                    return pollData;
+                })
+            );
+            
+            return pollsWithVotes;
+        } catch (error) {
+            console.error("Error fetching user polls with votes:", error);
+            throw error;
+        }
+    },
+
+    /**
+     * Delete a poll and all its votes
+     */
+    deletePoll: async (pollId: string, userId: string) => {
+        try {
+            // First verify ownership
+            const pollDoc = await getDoc(doc(db, 'polls', pollId));
+            if (!pollDoc.exists()) {
+                throw new Error('Poll not found');
+            }
+            
+            const pollData = pollDoc.data();
+            if (pollData.userId !== userId) {
+                throw new Error('Not authorized to delete this poll');
+            }
+
+            // Delete all votes first (subcollection)
+            const votesSnapshot = await getDocs(collection(db, `polls/${pollId}/votes`));
+            const deletePromises = votesSnapshot.docs.map(voteDoc => 
+                deleteDoc(doc(db, `polls/${pollId}/votes`, voteDoc.id))
+            );
+            await Promise.all(deletePromises);
+
+            // Delete the poll document
+            await deleteDoc(doc(db, 'polls', pollId));
+            
+            return true;
+        } catch (error) {
+            console.error("Error deleting poll:", error);
             throw error;
         }
     }

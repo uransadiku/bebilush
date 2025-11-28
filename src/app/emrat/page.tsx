@@ -1,13 +1,13 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { Sparkles, ArrowRight, X, Heart } from 'lucide-react';
+import { Sparkles, ArrowRight, X, Heart, Share2, Trash2, Link2, Users, ChevronRight, Copy, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/context/AuthContext';
 import { useSavedNames } from '@/hooks/useSavedNames';
 
-import { pollService } from '@/services/pollService';
+import { pollService, Poll } from '@/services/pollService';
 
 // Simple motion components could be added here, but we'll stick to CSS transitions for reliability
 // This design focuses on Editorial Minimalism - "The UI is the text"
@@ -29,16 +29,25 @@ export default function EmratPage() {
     const [showToast, setShowToast] = useState(false);
     const [showSavedView, setShowSavedView] = useState(false);
     const [generationCount, setGenerationCount] = useState(0);
-    const [modalType, setModalType] = useState<'save' | 'limit' | 'likes_limit' | 'share_poll' | 'enter_name' | 'register_share' | 'confirm_poll'>('save');
+    const [modalType, setModalType] = useState<'save' | 'limit' | 'likes_limit' | 'share_poll' | 'enter_name' | 'register_share' | 'confirm_poll' | 'delete_poll' | 'poll_limit'>('save');
     const [isClient, setIsClient] = useState(false);
     const [pollLink, setPollLink] = useState('');
     const [creatorName, setCreatorName] = useState(''); // State for creator name
     const [isCreatingPoll, setIsCreatingPoll] = useState(false);
     const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
+    
+    // Poll management state
+    const [userPolls, setUserPolls] = useState<Poll[]>([]);
+    const [isLoadingPolls, setIsLoadingPolls] = useState(false);
+    const [pollToDelete, setPollToDelete] = useState<Poll | null>(null);
+    const [isDeletingPoll, setIsDeletingPoll] = useState(false);
+    const [drawerTab, setDrawerTab] = useState<'names' | 'polls'>('names');
+    const [copiedPollId, setCopiedPollId] = useState<string | null>(null);
 
     const GUEST_LIMIT = 10;
     const USER_LIMIT = 25;
     const FREE_LIMIT = 3; // Generation limit for guests
+    const MAX_POLLS = 3;
 
     // Restore generation count from local storage
     useEffect(() => {
@@ -53,6 +62,64 @@ export default function EmratPage() {
             setCreatorName(user.displayName);
         }
     }, [user]);
+
+    // Load user polls when drawer opens or user changes
+    const loadUserPolls = useCallback(async () => {
+        if (!user) {
+            setUserPolls([]);
+            return;
+        }
+        
+        setIsLoadingPolls(true);
+        try {
+            const polls = await pollService.getUserPollsWithVotes(user.uid);
+            setUserPolls(polls);
+        } catch (error) {
+            console.error("Error loading polls:", error);
+        } finally {
+            setIsLoadingPolls(false);
+        }
+    }, [user]);
+
+    // Load polls when drawer opens
+    useEffect(() => {
+        if (showSavedView && user) {
+            loadUserPolls();
+        }
+    }, [showSavedView, user, loadUserPolls]);
+
+    // Delete poll handler
+    const handleDeletePoll = async () => {
+        if (!pollToDelete || !user) return;
+        
+        setIsDeletingPoll(true);
+        try {
+            await pollService.deletePoll(pollToDelete.id!, user.uid);
+            setUserPolls(prev => prev.filter(p => p.id !== pollToDelete.id));
+            setPollToDelete(null);
+            setShowAuthModal(false);
+        } catch (error) {
+            console.error("Error deleting poll:", error);
+            alert("Ndodhi një gabim gjatë fshirjes. Provoni përsëri.");
+        } finally {
+            setIsDeletingPoll(false);
+        }
+    };
+
+    // Copy poll link helper
+    const copyPollLink = (pollId: string) => {
+        const link = `${window.location.origin}/vote/${pollId}`;
+        navigator.clipboard.writeText(link);
+        setCopiedPollId(pollId);
+        setTimeout(() => setCopiedPollId(null), 2000);
+    };
+
+    // Share to WhatsApp helper
+    const shareToWhatsApp = (pollId: string, creatorName: string) => {
+        const link = `${window.location.origin}/vote/${pollId}`;
+        const text = `${creatorName} po kërkon ndihmën tuaj për të zgjedhur emrin e bebit! Votoni këtu: ${link}`;
+        window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+    };
 
     const incrementGeneration = () => {
         const newCount = generationCount + 1;
@@ -213,8 +280,9 @@ export default function EmratPage() {
 
         setIsCreatingPoll(true);
         try {
-            // 2. Check existing polls
-            const polls = await pollService.getUserPolls(user.uid);
+            // Refresh polls list
+            const polls = await pollService.getUserPollsWithVotes(user.uid);
+            setUserPolls(polls);
 
             // Check for duplicate list (exact match of names)
             const currentNames = Array.from(savedNames).sort().join(',');
@@ -230,14 +298,16 @@ export default function EmratPage() {
                 return;
             }
 
-            // 3. Check poll limit (Max 3)
-            if (polls.length >= 3) {
-                alert("Keni arritur limitin e 3 sondazheve aktive. Fshini një ekzistues për të krijuar të ri.");
+            // Check poll limit (Max 3) - show management modal instead of alert
+            if (polls.length >= MAX_POLLS) {
+                setModalType('poll_limit');
+                setShowAuthModal(true);
+                setShowSavedView(false);
                 setIsCreatingPoll(false);
                 return;
             }
 
-            // 4. Ask for name if missing
+            // Ask for name if missing
             if (!creatorName.trim()) {
                 setModalType('enter_name');
                 setShowAuthModal(true);
@@ -246,7 +316,7 @@ export default function EmratPage() {
                 return;
             }
 
-            // 5. Confirm Final List
+            // Confirm Final List
             setModalType('confirm_poll');
             setShowAuthModal(true);
             setShowSavedView(false);
@@ -267,6 +337,9 @@ export default function EmratPage() {
             const origin = window.location.origin;
             setPollLink(`${origin}/vote/${pollId}`);
             setModalType('share_poll');
+            
+            // Refresh polls list
+            loadUserPolls();
         } catch (error) {
             console.error("Failed to create poll", error);
             alert("Ndodhi një gabim. Ju lutem provoni përsëri.");
@@ -310,49 +383,201 @@ export default function EmratPage() {
                     style={{ transitionTimingFunction: 'cubic-bezier(0.32, 0.72, 0, 1)' }}
                     onClick={e => e.stopPropagation()}
                 >
-                    {/* Drawer Header */}
-                    <div className="p-6 md:p-8 border-b border-zinc-100 flex items-center justify-between bg-white/80 backdrop-blur-md sticky top-0 z-10">
-                        <div>
-                            <h3 className="text-2xl font-heading font-bold text-zinc-900">Të preferuarit</h3>
-                            <p className="text-zinc-500 text-sm mt-1">
-                                Keni ruajtur {savedNames.size} nga {user ? USER_LIMIT : GUEST_LIMIT} emra
-                            </p>
+                    {/* Drawer Header with Tabs */}
+                    <div className="border-b border-zinc-100 bg-white/80 backdrop-blur-md sticky top-0 z-10">
+                        <div className="p-6 pb-0 md:px-8 flex items-start justify-between">
+                            <div>
+                                <h3 className="text-2xl font-heading font-bold text-zinc-900">
+                                    {drawerTab === 'names' ? 'Të preferuarit' : 'Sondazhet e mia'}
+                                </h3>
+                                <p className="text-zinc-500 text-sm mt-1">
+                                    {drawerTab === 'names' 
+                                        ? `${savedNames.size} nga ${user ? USER_LIMIT : GUEST_LIMIT} emra`
+                                        : `${userPolls.length} nga ${MAX_POLLS} sondazhe aktive`
+                                    }
+                                </p>
+                            </div>
+                            <button
+                                onClick={() => setShowSavedView(false)}
+                                className="p-2 hover:bg-zinc-100 rounded-full transition-colors -mr-2 -mt-2"
+                            >
+                                <X size={24} className="text-zinc-400 hover:text-black" />
+                            </button>
                         </div>
-                        <button
-                            onClick={() => setShowSavedView(false)}
-                            className="p-2 hover:bg-zinc-100 rounded-full transition-colors"
-                        >
-                            <X size={24} className="text-zinc-400 hover:text-black" />
-                        </button>
+                        
+                        {/* Tab Switcher - Show for all users now */}
+                        <div className="px-6 md:px-8 pt-4 pb-0">
+                            <div className="flex gap-1 p-1 bg-zinc-100 rounded-xl">
+                                <button
+                                    onClick={() => setDrawerTab('names')}
+                                    className={cn(
+                                        "flex-1 py-2.5 px-4 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2",
+                                        drawerTab === 'names' 
+                                            ? "bg-white text-black shadow-sm" 
+                                            : "text-zinc-500 hover:text-zinc-700"
+                                    )}
+                                >
+                                    <Heart size={16} className={drawerTab === 'names' ? "fill-current" : ""} />
+                                    <span>Lista</span>
+                                    {savedNames.size > 0 && (
+                                        <span className={cn(
+                                            "px-1.5 py-0.5 text-xs rounded-full",
+                                            drawerTab === 'names' ? "bg-black text-white" : "bg-zinc-200 text-zinc-600"
+                                        )}>{savedNames.size}</span>
+                                    )}
+                                </button>
+                                <button
+                                    onClick={() => setDrawerTab('polls')}
+                                    className={cn(
+                                        "flex-1 py-2.5 px-4 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2",
+                                        drawerTab === 'polls' 
+                                            ? "bg-white text-black shadow-sm" 
+                                            : "text-zinc-500 hover:text-zinc-700"
+                                    )}
+                                >
+                                    <Share2 size={16} />
+                                    <span>Sondazhet</span>
+                                    {userPolls.length > 0 && (
+                                        <span className={cn(
+                                            "px-1.5 py-0.5 text-xs rounded-full",
+                                            drawerTab === 'polls' ? "bg-black text-white" : "bg-zinc-200 text-zinc-600"
+                                        )}>{userPolls.length}</span>
+                                    )}
+                                </button>
+                            </div>
+                        </div>
+                        <div className="h-4" />
                     </div>
 
-                    {/* Saved List */}
-                    <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-4">
-                        {savedNames.size === 0 ? (
-                            <div className="h-full flex flex-col items-center justify-center text-zinc-400 space-y-4">
-                                <Heart size={48} className="opacity-20" />
-                                <p>Asnjë emër i ruajtur ende</p>
+                    {/* Content Area */}
+                    <div className="flex-1 overflow-y-auto">
+                        {/* NAMES TAB */}
+                        {drawerTab === 'names' && (
+                            <div className="p-6 md:p-8 pt-2 space-y-4">
+                                {savedNames.size === 0 ? (
+                                    <div className="h-[40vh] flex flex-col items-center justify-center text-zinc-400 space-y-4">
+                                        <Heart size={48} className="opacity-20" />
+                                        <p>Asnjë emër i ruajtur ende</p>
+                                    </div>
+                                ) : (
+                                    Array.from(savedNames).map((name) => (
+                                        <div key={name} className="flex items-center justify-between p-4 rounded-2xl bg-zinc-50 border border-zinc-100 group hover:border-zinc-200 transition-colors">
+                                            <span className="text-xl font-heading font-bold text-zinc-900">{name}</span>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    toggleSaveName(name);
+                                                }}
+                                                className="p-2 text-zinc-300 hover:text-red-500 transition-colors"
+                                            >
+                                                <X size={18} />
+                                            </button>
+                                        </div>
+                                    ))
+                                )}
                             </div>
-                        ) : (
-                            Array.from(savedNames).map((name) => (
-                                <div key={name} className="flex items-center justify-between p-4 rounded-2xl bg-zinc-50 border border-zinc-100 group hover:border-zinc-200 transition-colors">
-                                    <span className="text-xl font-heading font-bold text-zinc-900">{name}</span>
-                                    <button
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            toggleSaveName(name);
-                                        }}
-                                        className="p-2 text-zinc-300 hover:text-red-500 transition-colors"
-                                    >
-                                        <X size={18} />
-                                    </button>
-                                </div>
-                            ))
+                        )}
+
+                        {/* POLLS TAB */}
+                        {drawerTab === 'polls' && user && (
+                            <div className="p-6 md:p-8 pt-2 space-y-4">
+                                {isLoadingPolls ? (
+                                    <div className="h-[40vh] flex items-center justify-center">
+                                        <div className="animate-pulse text-zinc-400">Po ngarkojmë sondazhet...</div>
+                                    </div>
+                                ) : userPolls.length === 0 ? (
+                                    <div className="h-[40vh] flex flex-col items-center justify-center text-zinc-400 space-y-4">
+                                        <Share2 size={48} className="opacity-20" />
+                                        <p className="text-center">Nuk keni krijuar ende asnjë sondazh.<br/>Krijoni një nga lista e emrave!</p>
+                                    </div>
+                                ) : (
+                                    userPolls.map((poll) => (
+                                        <div key={poll.id} className="p-4 rounded-2xl bg-zinc-50 border border-zinc-100 space-y-4">
+                                            {/* Poll Header */}
+                                            <div className="flex items-start justify-between">
+                                                <div className="space-y-1">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 text-xs font-medium rounded-full">
+                                                            <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+                                                            Aktiv
+                                                        </span>
+                                                        <span className="text-xs text-zinc-400">
+                                                            {poll.createdAt?.toDate?.().toLocaleDateString('sq-AL') || ''}
+                                                        </span>
+                                                    </div>
+                                                    <p className="text-lg font-heading font-bold text-zinc-900">
+                                                        {poll.names.length} emra
+                                                    </p>
+                                                </div>
+                                                <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-full border border-zinc-200">
+                                                    <Users size={14} className="text-zinc-500" />
+                                                    <span className="text-sm font-medium">{poll.voteCount || 0} vota</span>
+                                                </div>
+                                            </div>
+
+                                            {/* Names Preview */}
+                                            <div className="flex flex-wrap gap-2">
+                                                {poll.names.slice(0, 5).map((name, i) => (
+                                                    <span key={i} className="px-3 py-1 bg-white rounded-full text-sm font-medium text-zinc-700 border border-zinc-100">
+                                                        {name}
+                                                    </span>
+                                                ))}
+                                                {poll.names.length > 5 && (
+                                                    <span className="px-3 py-1 bg-zinc-100 rounded-full text-sm text-zinc-500">
+                                                        +{poll.names.length - 5} të tjerë
+                                                    </span>
+                                                )}
+                                            </div>
+
+                                            {/* Actions */}
+                                            <div className="flex gap-2 pt-2">
+                                                <button
+                                                    onClick={() => copyPollLink(poll.id!)}
+                                                    className={cn(
+                                                        "flex-1 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-all",
+                                                        copiedPollId === poll.id
+                                                            ? "bg-green-100 text-green-700"
+                                                            : "bg-white border border-zinc-200 text-zinc-700 hover:border-zinc-300"
+                                                    )}
+                                                >
+                                                    {copiedPollId === poll.id ? (
+                                                        <>
+                                                            <Check size={16} />
+                                                            <span>U kopjua!</span>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Copy size={16} />
+                                                            <span>Kopjo linkun</span>
+                                                        </>
+                                                    )}
+                                                </button>
+                                                <button
+                                                    onClick={() => shareToWhatsApp(poll.id!, poll.creatorName)}
+                                                    className="flex-1 py-2.5 bg-[#25D366] text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 hover:opacity-90 transition-opacity"
+                                                >
+                                                    <Share2 size={16} />
+                                                    <span>WhatsApp</span>
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setPollToDelete(poll);
+                                                        setModalType('delete_poll');
+                                                        setShowAuthModal(true);
+                                                    }}
+                                                    className="p-2.5 rounded-xl border border-zinc-200 text-zinc-400 hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition-colors"
+                                                >
+                                                    <Trash2 size={16} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
                         )}
                     </div>
 
-                    {/* Drawer Footer - Conversion Hook */}
-                    {/* Drawer Footer - Gamified & Viral */}
+                    {/* Drawer Footer */}
                     <div className="p-6 md:p-8 border-t border-zinc-100 bg-zinc-50/50">
                         {!user ? (
                             <div className="space-y-4">
@@ -372,29 +597,65 @@ export default function EmratPage() {
                                     <ArrowRight size={18} />
                                 </button>
                             </div>
+                        ) : drawerTab === 'names' ? (
+                            <div className="space-y-4">
+                                {savedNames.size > 0 && (
+                                    <>
+                                        <div className="flex items-start gap-3 p-4 bg-blue-50/50 rounded-xl border border-blue-100/50">
+                                            <div className="p-1.5 bg-blue-100 rounded-full text-blue-600 mt-0.5">
+                                                <Sparkles size={14} />
+                                            </div>
+                                            <p className="text-sm text-blue-800/80 leading-relaxed">
+                                                Jeni në dilemë? Ndani listën me partnerin ose miqtë dhe lërini ata të votojnë për emrin e preferuar!
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={handleCreatePollClick}
+                                            disabled={isCreatingPoll || savedNames.size === 0}
+                                            className="w-full py-4 bg-black text-white font-medium text-lg rounded-xl hover:scale-[1.02] transition-transform shadow-xl shadow-black/5 active:scale-95 flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
+                                        >
+                                            {isCreatingPoll ? (
+                                                <span className="animate-pulse">Po krijojmë linkun...</span>
+                                            ) : (
+                                                <>
+                                                    <span>Krijo Link Votimi</span>
+                                                    <ArrowRight size={18} />
+                                                </>
+                                            )}
+                                        </button>
+                                    </>
+                                )}
+                                {userPolls.length > 0 && (
+                                    <button
+                                        onClick={() => setDrawerTab('polls')}
+                                        className="w-full py-3 text-zinc-600 font-medium text-sm flex items-center justify-center gap-2 hover:text-black transition-colors"
+                                    >
+                                        <Share2 size={16} />
+                                        <span>Shiko {userPolls.length} sondazhe aktive</span>
+                                        <ChevronRight size={16} />
+                                    </button>
+                                )}
+                            </div>
                         ) : (
                             <div className="space-y-4">
-                                <div className="flex items-start gap-3 p-4 bg-blue-50/50 rounded-xl border border-blue-100/50">
-                                    <div className="p-1.5 bg-blue-100 rounded-full text-blue-600 mt-0.5">
-                                        <Sparkles size={14} />
-                                    </div>
-                                    <p className="text-sm text-blue-800/80 leading-relaxed">
-                                        Jeni në dilemë? Ndani listën me partnerin ose miqtë dhe lërini ata të votojnë për emrin e preferuar!
-                                    </p>
-                                </div>
+                                {userPolls.length < MAX_POLLS && savedNames.size > 0 && (
+                                    <button
+                                        onClick={() => {
+                                            setDrawerTab('names');
+                                            handleCreatePollClick();
+                                        }}
+                                        className="w-full py-4 bg-black text-white font-medium text-lg rounded-xl hover:scale-[1.02] transition-transform shadow-xl shadow-black/5 active:scale-95 flex items-center justify-center gap-2"
+                                    >
+                                        <span>Krijo Sondazh të Ri</span>
+                                        <ArrowRight size={18} />
+                                    </button>
+                                )}
                                 <button
-                                    onClick={handleCreatePollClick}
-                                    disabled={isCreatingPoll}
-                                    className="w-full py-4 bg-black text-white font-medium text-lg rounded-xl hover:scale-[1.02] transition-transform shadow-xl shadow-black/5 active:scale-95 flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
+                                    onClick={() => setDrawerTab('names')}
+                                    className="w-full py-3 text-zinc-600 font-medium text-sm flex items-center justify-center gap-2 hover:text-black transition-colors"
                                 >
-                                    {isCreatingPoll ? (
-                                        <span className="animate-pulse">Po krijojmë linkun...</span>
-                                    ) : (
-                                        <>
-                                            <span>Krijo Link Votimi</span>
-                                            <ArrowRight size={18} />
-                                        </>
-                                    )}
+                                    <Heart size={16} />
+                                    <span>Kthehu te lista e emrave</span>
                                 </button>
                             </div>
                         )}
@@ -421,11 +682,18 @@ export default function EmratPage() {
                         </button>
 
                         <div className="flex flex-col items-center text-center space-y-6">
-                            <div className="w-16 h-16 bg-zinc-50 rounded-full flex items-center justify-center mb-2">
+                            <div className={cn(
+                                "w-16 h-16 rounded-full flex items-center justify-center mb-2",
+                                modalType === 'delete_poll' ? "bg-red-50" : "bg-zinc-50"
+                            )}>
                                 {modalType === 'save' || modalType === 'likes_limit' ? (
                                     <Heart className="w-8 h-8 fill-black text-black" />
                                 ) : modalType === 'share_poll' ? (
                                     <Sparkles className="w-8 h-8 text-black fill-black" />
+                                ) : modalType === 'delete_poll' ? (
+                                    <Trash2 className="w-8 h-8 text-red-500" />
+                                ) : modalType === 'poll_limit' ? (
+                                    <Share2 className="w-8 h-8 text-black" />
                                 ) : (
                                     <Sparkles className="w-8 h-8 text-black" />
                                 )}
@@ -439,7 +707,9 @@ export default function EmratPage() {
                                                 modalType === 'enter_name' ? 'Si quheni?' :
                                                     modalType === 'register_share' ? 'Krijoni llogari për të shpërndarë' :
                                                         modalType === 'confirm_poll' ? 'Konfirmoni listën' :
-                                                            'Keni arritur limitin ditor'}
+                                                            modalType === 'delete_poll' ? 'Fshini sondazhin?' :
+                                                                modalType === 'poll_limit' ? 'Limiti i sondazheve' :
+                                                                    'Keni arritur limitin ditor'}
                                 </h3>
                                 <p className="text-zinc-500 leading-relaxed">
                                     {modalType === 'save'
@@ -454,7 +724,11 @@ export default function EmratPage() {
                                                         ? 'Vetëm përdoruesit e regjistruar mund të krijojnë sondazhe dhe të shpërndajnë listën.'
                                                         : modalType === 'confirm_poll'
                                                             ? 'Lista do të finalizohet për votim. Nuk do të mund të shtoni emra të tjerë në këtë sondazh pasi të krijohet.'
-                                                            : 'Keni arritur limitin e kërkimeve si vizitor. Krijoni një llogari falas për të vazhduar kërkimin pa limit.'
+                                                            : modalType === 'delete_poll'
+                                                                ? `Kjo do të fshijë sondazhin me ${pollToDelete?.names.length || 0} emra dhe ${pollToDelete?.voteCount || 0} vota. Ky veprim nuk mund të kthehet.`
+                                                                : modalType === 'poll_limit'
+                                                                    ? `Keni arritur limitin e ${MAX_POLLS} sondazheve aktive. Fshini një sondazh ekzistues për të krijuar një të ri.`
+                                                                    : 'Keni arritur limitin e kërkimeve si vizitor. Krijoni një llogari falas për të vazhduar kërkimin pa limit.'
                                     }
                                 </p>
                             </div>
@@ -518,6 +792,82 @@ export default function EmratPage() {
                                         className="w-full py-4 text-zinc-500 hover:text-zinc-900 font-medium transition-colors"
                                     >
                                         Anulo
+                                    </button>
+                                </div>
+                            ) : modalType === 'delete_poll' ? (
+                                <div className="w-full space-y-3 pt-2">
+                                    {/* Show poll names being deleted */}
+                                    {pollToDelete && (
+                                        <div className="flex flex-wrap gap-2 justify-center pb-4">
+                                            {pollToDelete.names.slice(0, 6).map((name, i) => (
+                                                <span key={i} className="px-3 py-1 bg-zinc-100 rounded-full text-sm text-zinc-600">
+                                                    {name}
+                                                </span>
+                                            ))}
+                                            {pollToDelete.names.length > 6 && (
+                                                <span className="px-3 py-1 bg-zinc-100 rounded-full text-sm text-zinc-400">
+                                                    +{pollToDelete.names.length - 6}
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
+                                    <button
+                                        onClick={handleDeletePoll}
+                                        disabled={isDeletingPoll}
+                                        className="w-full py-4 bg-red-500 text-white font-medium text-lg rounded-xl hover:bg-red-600 transition-colors active:scale-95 disabled:opacity-50"
+                                    >
+                                        {isDeletingPoll ? 'Po fshihet...' : 'Po, fshije sondazhin'}
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            setPollToDelete(null);
+                                            setShowAuthModal(false);
+                                        }}
+                                        className="w-full py-4 text-zinc-500 hover:text-zinc-900 font-medium transition-colors"
+                                    >
+                                        Anulo
+                                    </button>
+                                </div>
+                            ) : modalType === 'poll_limit' ? (
+                                <div className="w-full space-y-4 pt-2">
+                                    {/* Show existing polls for quick management */}
+                                    <div className="space-y-3 max-h-[200px] overflow-y-auto">
+                                        {userPolls.map((poll) => (
+                                            <div key={poll.id} className="flex items-center justify-between p-3 bg-zinc-50 rounded-xl border border-zinc-100">
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="font-medium text-sm truncate">
+                                                        {poll.names.slice(0, 3).join(', ')}
+                                                        {poll.names.length > 3 && ` +${poll.names.length - 3}`}
+                                                    </p>
+                                                    <p className="text-xs text-zinc-400">{poll.voteCount || 0} vota</p>
+                                                </div>
+                                                <button
+                                                    onClick={() => {
+                                                        setPollToDelete(poll);
+                                                        setModalType('delete_poll');
+                                                    }}
+                                                    className="ml-2 p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                                >
+                                                    <Trash2 size={16} />
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <button
+                                        onClick={() => {
+                                            setShowAuthModal(false);
+                                            setShowSavedView(true);
+                                            setDrawerTab('polls');
+                                        }}
+                                        className="w-full py-4 bg-black text-white font-medium text-lg rounded-xl hover:scale-[1.02] transition-transform active:scale-95"
+                                    >
+                                        Menaxho Sondazhet
+                                    </button>
+                                    <button
+                                        onClick={() => setShowAuthModal(false)}
+                                        className="w-full py-4 text-zinc-500 hover:text-zinc-900 font-medium transition-colors"
+                                    >
+                                        Mbyll
                                     </button>
                                 </div>
                             ) : (

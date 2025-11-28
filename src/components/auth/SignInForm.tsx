@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { signInWithEmailAndPassword, sendPasswordResetEmail } from "firebase/auth";
+import { signInWithEmailAndPassword, sendPasswordResetEmail, fetchSignInMethodsForEmail } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,7 @@ export function SignInForm() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
     const [resetSent, setResetSent] = useState(false);
+    const [isGoogleAccount, setIsGoogleAccount] = useState(false);
     const { signInWithGoogle } = useAuth();
     const router = useRouter();
     const searchParams = useSearchParams();
@@ -32,7 +33,20 @@ export function SignInForm() {
             await signInWithEmailAndPassword(auth, email, password);
             router.push(redirectUrl);
         } catch (err: any) {
-            setError("Email ose fjalëkalimi i pasaktë.");
+            console.error("Login error:", err);
+            // Check if the user exists with another provider
+            try {
+                const methods = await fetchSignInMethodsForEmail(auth, email);
+                if (methods && methods.includes("google.com")) {
+                    setIsGoogleAccount(true);
+                    setError("Kjo llogari është e lidhur me Google. Ju lutem përdorni butonin e Google më poshtë.");
+                } else {
+                    setError("Email ose fjalëkalimi i pasaktë.");
+                }
+            } catch (checkErr) {
+                // Fallback to generic error if check fails (e.g. email enumeration protection)
+                setError("Email ose fjalëkalimi i pasaktë.");
+            }
         } finally {
             setLoading(false);
         }
@@ -48,7 +62,11 @@ export function SignInForm() {
                 return;
             }
 
-            router.push(redirectUrl);
+            if (isGoogleAccount) {
+                router.push("/account?action=set-password");
+            } else {
+                router.push(redirectUrl);
+            }
         } catch (error) {
             setError("Gabim gjatë kyçjes me Google.");
         }
@@ -124,7 +142,11 @@ export function SignInForm() {
                         </div>
                     </div>
 
-                    {error && <p className="text-sm text-red-500 text-center">{error}</p>}
+                    {error && (
+                        <div className="space-y-3 text-center">
+                            <p className="text-sm text-red-500">{error}</p>
+                        </div>
+                    )}
                     {resetSent && <p className="text-sm text-green-500 text-center">Email për resetim u dërgua!</p>}
 
                     <Button type="submit" className="w-full" disabled={loading}>
