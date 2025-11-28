@@ -19,6 +19,15 @@ export interface Vote {
     createdAt: any;
 }
 
+export interface PollResults {
+    rankings: { name: string; points: number; voteCount: number; percentage: number }[];
+    voters: { name: string; votedAt: Date; rankedNames: { name: string; rank: number; points: number }[] }[];
+    totalPoints: number;
+    totalVoters: number;
+    leadingName: string | null;
+    isDecisive: boolean; // If there's a clear winner (significant point lead)
+}
+
 export const pollService = {
     /**
      * Creates a new poll with the given names
@@ -141,6 +150,105 @@ export const pollService = {
             return pollsWithVotes;
         } catch (error) {
             console.error("Error fetching user polls with votes:", error);
+            throw error;
+        }
+    },
+
+    /**
+     * Get detailed poll results with rankings and voter info
+     * Supports weighted voting: 1st choice = 3pts, 2nd = 2pts, 3rd = 1pt
+     * Backwards compatible with old binary votes (value=1 treated as 1pt)
+     */
+    getPollResults: async (pollId: string): Promise<PollResults> => {
+        try {
+            const votes = await pollService.getPollVotes(pollId);
+            const poll = await pollService.getPoll(pollId);
+            
+            if (!poll) {
+                throw new Error('Poll not found');
+            }
+
+            // Calculate point tallies and vote counts per name
+            const pointTally: Record<string, number> = {};
+            const voteCountTally: Record<string, number> = {};
+            poll.names.forEach(name => {
+                pointTally[name] = 0;
+                voteCountTally[name] = 0;
+            });
+
+            // Process all votes
+            const voters: PollResults['voters'] = [];
+            votes.forEach(vote => {
+                const rankedNames: { name: string; rank: number; points: number }[] = [];
+                
+                // Sort by points descending to determine rank
+                const sortedVotes = Object.entries(vote.votes)
+                    .filter(([_, value]) => value > 0)
+                    .sort((a, b) => b[1] - a[1]);
+                
+                sortedVotes.forEach(([name, points], idx) => {
+                    // Add points to tally
+                    pointTally[name] = (pointTally[name] || 0) + points;
+                    voteCountTally[name] = (voteCountTally[name] || 0) + 1;
+                    
+                    // Determine rank based on points (3=1st, 2=2nd, 1=3rd, else legacy)
+                    let rank: number;
+                    if (points === 3) rank = 1;
+                    else if (points === 2) rank = 2;
+                    else if (points === 1) rank = 3;
+                    else rank = idx + 1; // Legacy fallback
+                    
+                    rankedNames.push({ name, rank, points });
+                });
+                
+                // Sort by rank for display
+                rankedNames.sort((a, b) => a.rank - b.rank);
+                
+                voters.push({
+                    name: vote.voterName,
+                    votedAt: vote.createdAt?.toDate?.() || new Date(),
+                    rankedNames
+                });
+            });
+
+            // Sort voters by most recent first
+            voters.sort((a, b) => b.votedAt.getTime() - a.votedAt.getTime());
+
+            // Calculate totals
+            const totalPoints = Object.values(pointTally).reduce((sum, v) => sum + v, 0);
+            const totalVoters = votes.length;
+
+            // Create rankings sorted by points (primary) then vote count (secondary)
+            const rankings = Object.entries(pointTally)
+                .map(([name, points]) => ({
+                    name,
+                    points,
+                    voteCount: voteCountTally[name],
+                    percentage: totalPoints > 0 ? Math.round((points / totalPoints) * 100) : 0
+                }))
+                .sort((a, b) => {
+                    // Primary: sort by points
+                    if (b.points !== a.points) return b.points - a.points;
+                    // Secondary: sort by vote count
+                    return b.voteCount - a.voteCount;
+                });
+
+            // Determine if there's a clear leader (>30% more points than 2nd place)
+            const leadingName = rankings[0]?.points > 0 ? rankings[0].name : null;
+            const isDecisive = rankings.length >= 2 && rankings[0].points > 0
+                ? (rankings[0].points > rankings[1].points * 1.3 && rankings[0].points >= 3)
+                : rankings[0]?.points >= 3;
+
+            return {
+                rankings,
+                voters,
+                totalPoints,
+                totalVoters,
+                leadingName,
+                isDecisive
+            };
+        } catch (error) {
+            console.error("Error fetching poll results:", error);
             throw error;
         }
     },

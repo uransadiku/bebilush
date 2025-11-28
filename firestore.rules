@@ -16,8 +16,8 @@ service cloud.firestore {
       match /votes/{voteId} {
         // Anyone can vote
         allow create: if true;
-        // Only the poll owner can read the votes
-        allow read: if request.auth != null && request.auth.uid == get(/databases/$(database)/documents/polls/$(pollId)).data.userId;
+        // Only the poll owner can read or delete the votes
+        allow read, delete: if request.auth != null && request.auth.uid == get(/databases/$(database)/documents/polls/$(pollId)).data.userId;
       }
     }
   }

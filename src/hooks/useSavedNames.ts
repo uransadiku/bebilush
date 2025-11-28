@@ -164,10 +164,34 @@ export function useSavedNames() {
         }
     };
 
+    const clearAllNames = async () => {
+        const previousNames = new Set(savedNames);
+        
+        // Optimistic update
+        setSavedNames(new Set());
+
+        if (user) {
+            const userDocRef = doc(db, "users", user.uid);
+            try {
+                await updateDoc(userDocRef, {
+                    savedNames: []
+                });
+            } catch (error) {
+                console.error("Error clearing names from cloud:", error);
+                // Revert on error
+                setSavedNames(previousNames);
+                throw error;
+            }
+        } else {
+            localStorage.setItem("guest_saved_names", JSON.stringify([]));
+        }
+    };
+
     return {
         savedNames,
         saveName,
         removeName,
+        clearAllNames,
         isLoadingNames
     };
 }
